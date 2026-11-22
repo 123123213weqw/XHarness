@@ -2,7 +2,9 @@ import css from './StatsLine.css'
 export default {
 			"root": "PvwIvW_root",
 			"summary": "PvwIvW_summary",
-      "details": "PvwIvW_details"
+      "details": "PvwIvW_details",
+      "strip": "PvwIvW_strip",
+      "stripItem": "PvwIvW_stripItem"
 		}
 const tagId = '@xharness/dsh-client-ui-conversation/StatsLine.module.css'
 if (typeof document !== 'undefined' && document.querySelector('style[data-plugin-css=' + JSON.stringify(tagId) + ']') === null) {

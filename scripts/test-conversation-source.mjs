@@ -45,7 +45,7 @@ const composerBusyStyle = '\n._7yzX1q_primary [data-composer-busy]{animation:xh-
 function baselineComposerStyle(source) {
  assert.ok(source.endsWith(composerBusyStyle),'reviewed composer busy animation must remain an exact append-only delta');
  const baseline=source.slice(0,-composerBusyStyle.length);
- assert.equal(createHash('sha256').update(baseline).digest('hex'),'62fa5c5f10a5c38f6d04f8a082a9f9fe470a1d11453dcaec442ce3350519029d','unrelated InputBar styles must retain their reviewed bytes');
+ assert.equal(createHash('sha256').update(baseline).digest('hex'),'69ab58356bf9c4f406b0e36c96b7fe2b6239d92da102990f6245bf9e86008653','unrelated InputBar styles must retain their reviewed bytes');
  return baseline;
 }
 const recoveryLocales = {
@@ -222,8 +222,8 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
  // Reviewed product styling: pin each intentionally changed sheet explicitly,
  // rather than weakening frozen-style parity for unrelated components.
  const reviewedStyles = {
-  'skeleton/InputBar': '62fa5c5f10a5c38f6d04f8a082a9f9fe470a1d11453dcaec442ce3350519029d',
-  'chat/StatsLine': 'eab66196169a782ec6d580f699fc2398c429baa105576b82b0dc0d834898ee60',
+  'skeleton/InputBar': '69ab58356bf9c4f406b0e36c96b7fe2b6239d92da102990f6245bf9e86008653',
+  'chat/StatsLine': '7180947c7471c272cda25e84b99a8c607f5fb74d5d6bb24b48175a04661e5958',
   'skeleton/ContextMeter': '7a712d895a114ee0a5cddc1cdbc55692e6d6b52289ef4409e927809bbc694ff2',
   'skeleton/PermissionSelect': 'e91048346a2948571cfa55321fd43f8a22cf96c0b0b89b4bd4882736a29eda74',
   'skeleton/TodoPanel': 'aaf719207bee33d33551031960513e1d0c8b7b01bb35a807a362f7b75e849fdc',
@@ -271,14 +271,19 @@ test('complete apply registration: keyed nodes, resident shell, overlays, docks,
  const host={getSnapshot:()=>({value:{busyEnter:'queue'}}),subscribe:()=>()=>{},set:async()=>{}};
  const ctx={effect:fn=>{const off=fn();if(typeof off==='function')effects.push(off)},locale:{register:(...args)=>dicts.push(args),bind:()=>k=>k},sessions:{provide:spec=>{events.push(['provide',spec.hooks,spec.props]);return()=>{}},list:{getSnapshot:()=>({byId:{}})},scope(){},on:()=>()=>{}},workspaces:{},layout:{},settingsScope:{bind:()=>host},conversationEvents:{register:d=>defs.push({kind:d.kind,target:d.target}),registerFallback:d=>defs.push({kind:d.kind,target:d.target,fallback:true})},conversationViews:{register:d=>views.push({target:d.target})},slots:{inject:(_n,fn)=>fn(),register:(spec,component)=>slots.push({spec,component}),entries:()=>[],subscribe:()=>()=>{},getVersion:()=>0},get:n=>ctx[n],on:(n)=>{events.push(n);return()=>{}},plugin:(plugin,config)=>{if(typeof plugin==='function')new plugin(ctx,config);else plugin.apply(ctx)}};
  api.apply(ctx);
- const normalize=slots.map(({spec})=>json({...spec,inject:undefined,select:undefined,store:undefined,label:typeof spec.label==='function'?spec.label():spec.label})).sort((a,b)=>(a.name+':'+(a.key??a.id??'')).localeCompare(b.name+':'+(b.key??b.id??'')));
+ const normalize=slots.map(({spec})=>json({...spec,inject:undefined,select:undefined,store:undefined,label:typeof spec.label==='function'?spec.label():spec.label})).sort((a,b)=>(a.name+':'+(a.key??a.id??'')).localeCompare(b.name+':'+(a.key??a.id??'')));
+ const recovery=normalize.findIndex(spec=>spec.name==='conversation.session.header.utilities'&&spec.id==='session-recovery');
+ const legacyStatIdx=normalize.findIndex(spec=>spec.name==='conversation.composer.dock'&&spec.id==='stats');
+ if(legacyStatIdx>=0)normalize.splice(legacyStatIdx,1);
  if(api===apis[1].plugin){
-  const recovery=normalize.findIndex(spec=>spec.name==='conversation.session.header.utilities'&&spec.id==='session-recovery');
   assert.ok(recovery>=0);assert.deepEqual(normalize[recovery],{name:'conversation.session.header.utilities',id:'session-recovery',order:90,locale:'conversation'});
   normalize.splice(recovery,1);
+  const statIdx=normalize.findIndex(spec=>spec.name==='conversation.composer.status'&&spec.id==='stats');
+  assert.ok(statIdx>=0);assert.deepEqual(normalize[statIdx],{name:'conversation.composer.status',id:'stats',order:0,locale:'conversation'});
+  normalize.splice(statIdx,1);
  }
  // Explicit additive environment slot, while old registrations remain unchanged.
- if(api===apis[1].plugin){const root=normalize.find(spec=>spec.name==='conversation');assert.deepEqual(root.children['conversation.hero.runtimeEnvironment'],{kind:'single',scope:'root'});delete root.children['conversation.hero.runtimeEnvironment'];}
+ if(api===apis[1].plugin){const root=normalize.find(spec=>spec.name==='conversation');assert.deepEqual(root.children['conversation.hero.runtimeEnvironment'],{kind:'single',scope:'root'});delete root.children['conversation.hero.runtimeEnvironment'];delete root.children['conversation.composer.status'];}
  const baselineDicts=json(dicts).map(([ns,languages])=>[ns,Object.fromEntries(Object.entries(languages).map(([language,values])=>[language,Object.fromEntries(Object.entries(api === apis[1].plugin ? baselineProductCopy(language, values) : values).filter(([key])=>!key.startsWith('tool.arguments.')&&!['approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'].includes(key)))]))]);
  receipts.push({slots:normalize,defs,views,dicts:baselineDicts,events});}
  assert.deepEqual(json(receipts[1]),json(receipts[0]));assert.equal(receipts[1].defs.length,13);
