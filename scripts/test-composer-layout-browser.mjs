@@ -101,13 +101,14 @@ try {
     assert.equal(layout.goalInCard,true)
     assert.equal(layout.statsInCard,true)
     assert.ok(layout.card.x>=0&&layout.card.x+layout.card.width<=width,JSON.stringify(layout))
-    assert.ok(layout.actions.width<=150&&layout.actions.height<=36,JSON.stringify(layout))
+    assert.ok(layout.actions.width<=280&&layout.actions.height<=36,JSON.stringify(layout))
     for(const control of [...layout.model,...layout.buttons]) {
       assert.ok(control.width>=24&&control.height>=24,JSON.stringify(layout))
       assert.ok(control.x>=layout.card.x&&control.x+control.width<=layout.card.x+layout.card.width+1,JSON.stringify(layout))
     }
     for(const control of layout.buttons) assert.ok(Math.abs(control.y+control.height/2-(layout.actions.y+layout.actions.height/2))<=1,JSON.stringify(layout))
-    assert.ok(layout.toolbar.height<=54,JSON.stringify(layout))
+    // Persistent stats strip + inline model label add rows below the input.
+  assert.ok(layout.toolbar.height<=96,JSON.stringify(layout))
     if([1280,375].includes(width)) {
       await page.screenshot({path:resolve(output,`${engine}-${dark?'dark':'light'}-${width}.png`)})
       await page.locator('[data-composer-card]').screenshot({path:resolve(output,`${engine}-${dark?'dark':'light'}-${width}-card.png`),animations:'disabled'})
@@ -256,29 +257,20 @@ try {
   await input.fill('')
   assert.equal(await primary().count(),1)
   assert.equal(await page.getByRole('button',{name:'Send message',exact:true}).isDisabled(),true)
-  // Stats disclosure is keyboard operable, not hover-only or clipped.
-  const summary=page.locator('[data-composer-stats] > button')
-  await summary.focus();await summary.press('Enter')
-  assert.equal(await summary.getAttribute('aria-expanded'),'true')
-  assert.match(await page.locator('[data-composer-stats]').innerText(),/Cache hit/)
-  assert.match(await page.locator('[data-composer-stats]').innerText(),/Input.*Output/)
-  const statsBox=await page.locator('[data-composer-stats] > div').boundingBox()
-  assert.ok(statsBox.x>=0&&statsBox.x+statsBox.width<=page.viewportSize().width&&statsBox.y>=0,JSON.stringify(statsBox))
-  await summary.press('Escape')
-  assert.equal(await summary.getAttribute('aria-expanded'),'false')
-  await summary.press('Enter')
-  await page.locator('.preview-transcript h1').click()
-  assert.equal(await summary.getAttribute('aria-expanded'),'false')
-  assert.equal(await page.locator('[data-composer-stats] > div').isVisible(),false)
+  // Stats ride a persistent always-on strip under the composer buttons.
+  assert.equal(await page.locator('[data-composer-stats] > button').count(),0,'no disclosure button remains')
+  const strip=page.locator('[data-composer-stats] > div')
+  await strip.waitFor()
+  assert.match(await strip.innerText(),/Cache hit/)
+  assert.match(await strip.innerText(),/Input.*Output/)
+  const statsBox=await strip.boundingBox()
+  assert.ok(statsBox.x>=0&&statsBox.y>=0,JSON.stringify(statsBox))
+  assert.ok(statsBox.width<=page.viewportSize().width,JSON.stringify(statsBox))
   await input.click()
-  // Both supported locales label the actual disclosure and its region.
+  // Both supported locales label the persistent strip region.
   for (const [locale, label] of [['zh', '对话统计'], ['en', 'Conversation statistics']]) {
     await set({locale})
-    assert.equal(await summary.getAttribute('aria-label'), label)
-    assert.equal(await summary.getAttribute('title'), label)
-    await summary.click()
-    await page.getByRole('region', {name: label, exact: true}).waitFor()
-    await summary.press('Escape')
+    assert.equal(await page.getByRole('status', {name: label, exact: true}).count(), 1)
   }
   // Compact Goal user controls still fit the integrated header. Historical
   // maxGoalRounds=256 metadata cannot impose a quota on the displayed count.

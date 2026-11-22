@@ -3,8 +3,7 @@
 // active conversation scrollport (see ConversationRoot data-conversation-scroll).
 
 import { throughput } from '../../shared/reception-metrics'
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { IconChecklistOutline14 } from '../primitives'
+import { memo, useId, useMemo } from 'react'
 import type { ConversationSnapshot, UseProjection } from "../types/runtime"
 import type { SnapshotSelectorHook } from "../types/slots"
 import type { ContextComposition, ContextPressureProjection, TokenUsageProjection } from "../types/wire"
@@ -159,28 +158,7 @@ export interface StatsLineProps {
 }
 
 export const StatsLine = memo(function StatsLine({ useSession, useProjection, t }: StatsLineProps) {
-  const disclosureRef = useRef<HTMLDivElement | null>(null)
-  const [open, setOpen] = useState(false)
   const panelId = useId()
-  useEffect(() => {
-    if (!open) return
-    const closeOutside = (event: PointerEvent): void => {
-      const disclosure = disclosureRef.current
-      if (disclosure !== null && event.target instanceof Node && !disclosure.contains(event.target)) setOpen(false)
-    }
-    const closeEscape = (event: globalThis.KeyboardEvent): void => {
-      const disclosure = disclosureRef.current
-      if (event.key !== 'Escape' || disclosure === null) return
-      setOpen(false)
-      disclosure.querySelector('button')?.focus()
-    }
-    document.addEventListener('pointerdown', closeOutside)
-    document.addEventListener('keydown', closeEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside)
-      document.removeEventListener('keydown', closeEscape)
-    }
-  }, [open])
   const settledNodes = useSession(s => s.chat.legacy.nodes)
   const usage = useProjection('tokenUsage')
   // Every figure rides the durable sessionStats projection, so paging and
@@ -223,17 +201,14 @@ export const StatsLine = memo(function StatsLine({ useSession, useProjection, t 
     }))
   }
   if (groups.length === 0) return null
-  // Explicit disclosure keeps off-card content accessible in WebKit as well
-  // as Chromium. It owns only open state, never token accounting.
+  // Persistent monitoring strip below the composer buttons: these figures
+  // exist to be watched continuously, so they render inline, always on. No
+  // disclosure interaction, no popup geometry.
   return (
-    <div ref={disclosureRef} className={css.root} data-composer-stats data-expanded={open || undefined}>
-      <button type="button" className={css.summary} aria-label={t('stats.title')} title={t('stats.title')}
-        aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => {setOpen(!open)}}>
-        <IconChecklistOutline14 />
-      </button>
-      {open && <div id={panelId} className={css.details} role="region" aria-label={t('stats.title')}>
-        {groups.map(group => <div key={group}>{group}</div>)}
-      </div>}
+    <div className={css.root} data-composer-stats>
+      <div id={panelId} className={css.strip} role="status" aria-label={t('stats.title')}>
+        {groups.map(group => <span key={group} className={css.stripItem}>{group}</span>)}
+      </div>
     </div>
   )
 })

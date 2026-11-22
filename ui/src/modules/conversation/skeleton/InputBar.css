@@ -10,7 +10,7 @@
 ._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_trailing{flex:1 0 auto;justify-content:flex-end;gap:8px}
 ._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_model._7yzX1q_root[data-composer-layout="compact"] eat{display:flex;justify-content:flex-end;flex:none;min-width:0}
 ._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_actions{display:flex;align-items:center;flex:none;gap:6px}
-._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_footer{display:flex;min-width:0;flex:none;padding:0}
+._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_footer{display:flex;min-width:0;max-width:100%;flex:0 1 auto;padding:0;overflow:hidden}
 ._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_add{width:32px;height:32px;background:transparent}
 ._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_add svg{width:20px;height:20px}
 ._7yzX1q_root[data-composer-layout="compact"] ._7yzX1q_primary{transform:none}
