@@ -181,6 +181,13 @@ try {
     await foregroundQuestion.getByRole('button', { name: 'Dismiss all questions', exact: true }).click()
     await foregroundQuestion.waitFor({ state: 'hidden' })
   }
+  // The sticky composer can still own an approval after a question closes.
+  // Its panel must not cover the independently scrollable message rail.
+  await page.waitForFunction(() => {
+    const rail = document.querySelector('.xh-message-rail')
+    const seat = document.querySelector('[data-conversation-scroll] [data-composer-seat]')
+    return rail && seat && rail.getBoundingClientRect().bottom <= seat.getBoundingClientRect().top + 1
+  })
   // Rapidly moving between distant marks must still mount and align the final
   // target. Preview optimization must not become a history/loading policy.
   const countBeforeJumps = await marks.count()

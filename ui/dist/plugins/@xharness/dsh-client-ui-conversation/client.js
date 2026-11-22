@@ -8160,7 +8160,7 @@ exports.default = styles;
 // source: src/modules/conversation/chat/MessageRail.css
 
 Object.defineProperty(exports, '__esModule', { value: true });
-exports.default = "[data-conversation-root] { position: relative; }\n.xh-message-rail {\n  position: absolute;\n  z-index: 6;\n  top: 50%;\n  /* Ride the message column's left edge (8px gap) so tool output and turn\n     process sit directly beside the rail, like the terminal timeline. */\n  left: max(8px, calc(50% - var(--dsh-chat-content-width) / 2 - 32px));\n  transform: translateY(-50%);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  width: 24px;\n  max-height: min(70%, 480px);\n  overflow-y: auto;\n  overscroll-behavior: contain;\n  scrollbar-width: none;\n}\n/* AppFrame owns docked/drawer workspace state; hiding this navigation never\n   changes the loaded history, scroll owner or panel state. */\n[data-xhworkspace-open] .xh-message-rail { display: none; }\n.xh-message-rail::-webkit-scrollbar { display: none; }\n.xh-message-rail-item {\n  display: flex;\n  flex: none;\n  align-items: center;\n  justify-content: center;\n  width: 24px;\n  height: 17px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  cursor: pointer;\n}\n.xh-message-rail-mark {\n  width: 10px;\n  height: 2px;\n  border-radius: 2px;\n  background: var(--dsw-alias-label-dimmed);\n}\n.xh-message-rail-item:hover .xh-message-rail-mark,\n.xh-message-rail-item:focus-visible .xh-message-rail-mark,\n.xh-message-rail-item[aria-current=\"location\"] .xh-message-rail-mark {\n  background: var(--dsw-alias-label-primary);\n}\n.xh-message-rail-item:focus-visible { outline: 2px solid var(--dsw-alias-label-primary); outline-offset: -2px; border-radius: 4px; }\n";
+exports.default = "[data-conversation-root] { position: relative; }\n.xh-message-rail {\n  position: absolute;\n  z-index: 6;\n  /* The rail is portaled into the conversation root, not the scroll body.\n     Center it above the sticky composer, including approvals and stats. */\n  top: max(0px, calc((100% - var(--dsh-composer-height, 0px)) / 2));\n  /* Ride the message column's left edge (8px gap) so tool output and turn\n     process sit directly beside the rail, like the terminal timeline. */\n  left: max(8px, calc(50% - var(--dsh-chat-content-width) / 2 - 32px));\n  transform: translateY(-50%);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  width: 24px;\n  max-height: min(70%, 480px, max(0px, calc(100% - var(--dsh-composer-height, 0px) - 32px)));\n  overflow-y: auto;\n  overscroll-behavior: contain;\n  scrollbar-width: none;\n}\n/* AppFrame owns docked/drawer workspace state; hiding this navigation never\n   changes the loaded history, scroll owner or panel state. */\n[data-xhworkspace-open] .xh-message-rail { display: none; }\n.xh-message-rail::-webkit-scrollbar { display: none; }\n.xh-message-rail-item {\n  display: flex;\n  flex: none;\n  align-items: center;\n  justify-content: center;\n  width: 24px;\n  height: 17px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  cursor: pointer;\n}\n.xh-message-rail-mark {\n  width: 10px;\n  height: 2px;\n  border-radius: 2px;\n  background: var(--dsw-alias-label-dimmed);\n}\n.xh-message-rail-item:hover .xh-message-rail-mark,\n.xh-message-rail-item:focus-visible .xh-message-rail-mark,\n.xh-message-rail-item[aria-current=\"location\"] .xh-message-rail-mark {\n  background: var(--dsw-alias-label-primary);\n}\n.xh-message-rail-item:focus-visible { outline: 2px solid var(--dsw-alias-label-primary); outline-offset: -2px; border-radius: 4px; }\n";
 
 },
 "src/modules/shared/foundation-styles.js": function(module, exports, require) {
@@ -9475,20 +9475,22 @@ function ConversationRoot({ sessionId, useSession, useSessions, useWorkspaces, u
     const [pickerOpen, setPickerOpen] = (0, react_1.useState)(false);
     const [pendingWorkspaceId, setPendingWorkspaceId] = (0, react_1.useState)();
     const pickerAnchor = (0, react_1.useRef)(null);
-    // Publishes the seat's live height as --dsh-composer-height on the scroll
-    // body so floating controls (ChatView back-to-bottom) clear the composer as
-    // it grows. Callback ref, not an effect; stable identity prevents observer
-    // churn while the first blank session fills the resident body outlet.
+    // Publish the live seat height where both the scroll body and the
+    // root-portal message rail can read it. Give the first layout a value
+    // before its ResizeObserver callback and clear it when the seat detaches.
     const seatObserver = (0, react_1.useRef)(null);
+    const seatOwner = (0, react_1.useRef)(null);
     const seatResizeRef = (0, react_1.useCallback)((seat) => {
         seatObserver.current?.disconnect();
         seatObserver.current = null;
-        const scroller = seat?.parentElement ?? null;
-        if (seat === null || scroller === null)
+        seatOwner.current?.style.removeProperty('--dsh-composer-height');
+        const root = seat?.closest('[data-conversation-root]') ?? null;
+        seatOwner.current = root;
+        if (seat === null || root === null)
             return;
-        seatObserver.current = new ResizeObserver(() => {
-            scroller.style.setProperty('--dsh-composer-height', `${seat.offsetHeight}px`);
-        });
+        const publish = () => root.style.setProperty('--dsh-composer-height', `${seat.offsetHeight}px`);
+        publish();
+        seatObserver.current = new ResizeObserver(publish);
         seatObserver.current.observe(seat);
     }, []);
     const sessionWorkspace = sessionId === undefined
