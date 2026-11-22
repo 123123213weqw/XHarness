@@ -1,0 +1,1525 @@
+// Generated from src/modules/layout/index.ts; do not edit.
+window.__ModuleLoader__.load({
+id: "@xharness/dsh-client-ui-layout",
+factory: (__externalRequire) => {
+const __units = {
+"src/modules/layout/index.js": function(module, exports, require) {
+// source: src/modules/layout/index.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.inject = exports.LayoutController = void 0;
+exports.apply = apply;
+const AppFrame_1 = require("./AppFrame");
+const stores_1 = require("./stores");
+const service_1 = require("./service");
+const theme_presenter_1 = require("./theme-presenter");
+const shell_navigation_1 = require("./shell-navigation");
+// Contract exports only (export-convergence rule: cross-package consumers
+// keep a symbol exported; test-only/package-internal symbols live off /src).
+// ILayout: the ctx.layout face consumers and test fakes type against.
+// OwnerShare contracts below are the render-side halves registrants compose
+// against; the frame components and the store factory are package-internal.
+var service_2 = require("./service");
+Object.defineProperty(exports, "LayoutController", { enumerable: true, get: function () { return service_2.LayoutController; } });
+/** Required services (cordis fiber inject — the loader passes all module exports as an object plugin). */
+exports.inject = ['slots', 'theme', 'sessions'];
+/**
+ * Client plugin body: provide ctx.layout, then one register() call — AppFrame
+ * into 'root' with the four child-slot declarations, the layout store seat,
+ * and the inject hook that hands the store's bound actions to the service.
+ * @param ctx - client root context.
+ */
+function apply(ctx) {
+    const layout = new service_1.LayoutController();
+    const navigation = new shell_navigation_1.ShellNavigation(ctx.get('sessions'));
+    ctx.effect(() => {
+        const disposeService = ctx.reflect.provide('layout', layout);
+        const disposeRegistration = ctx.slots.register({
+            name: 'root',
+            children: {
+                'sidebar': { kind: 'single', scope: 'root' },
+                'conversation': { kind: 'single', scope: 'session-maybe' },
+                'plugins.center': { kind: 'single', scope: 'root' },
+                'assistant.center': { kind: 'single', scope: 'root' },
+                'swarm.center': { kind: 'single', scope: 'root' },
+                'work.center.tasks': { kind: 'single', scope: 'root' },
+                'work.center.automations': { kind: 'single', scope: 'root' },
+                'work.center.executions': { kind: 'single', scope: 'root' },
+                'details': { kind: 'single', scope: 'session' },
+                'shell.overlay': { kind: 'list', scope: 'root' },
+                'workspace.item': { kind: 'list', scope: 'root' },
+            },
+            // Exclusive store: the factory itself — the framework instantiates per
+            // entry and delivers useStore/actions to AppFrame as standard props.
+            store: stores_1.createLayoutStore,
+            // The hook's only side effect connects the root store to ctx.layout;
+            // conversation business actions belong to their registrants.
+            inject: (actions) => {
+                layout.attachPanels(actions);
+                return { navigation };
+            },
+        }, AppFrame_1.AppFrame);
+        return () => {
+            disposeRegistration();
+            // provide()'s disposer settles asynchronously; teardown is synchronous fire-and-forget.
+            void disposeService();
+        };
+    }, 'ui-layout: service + root registration');
+    // Theme presentation: pure DOM writes from resolved snapshots — initial
+    // state through the getter once, then event-driven only; no React path.
+    ctx.effect(() => {
+        const presenter = new theme_presenter_1.ThemePresenter();
+        presenter.apply(ctx.theme.getTheme());
+        const off = ctx.on('theme/change', (snapshot) => { presenter.apply(snapshot); });
+        return () => {
+            off();
+            presenter.dispose();
+        };
+    }, 'ui-layout: theme presenter');
+}
+
+},
+"src/modules/layout/AppFrame.js": function(module, exports, require) {
+// source: src/modules/layout/AppFrame.tsx
+
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AppFrame = AppFrame;
+const jsx_runtime_1 = require("react/jsx-runtime");
+/**
+ * Three-column shell frame, registered into the built-in 'root' slot (the web
+ * shell renders only 'root'). Owns the grid tracks (sidebar | center |
+ * details), the drag handles (pointer capture + rAF throttle), the concession
+ * chain (columns.ts), and the child-slot render decisions: the sidebar slot
+ * renders HERE with live parameters from the concession solve, and the
+ * session-aware occupants render in fixed column positions; strict entries
+ * gate themselves on current-session availability while session-maybe
+ * entries retain identity. Pure component: everything arrives
+ * through the three framework shares — zero cordis or framework imports,
+ * zero self-made hooks.
+ */
+const react_1 = require("react");
+const columns_1 = require("./columns");
+const AppFrame_styles_1 = __importDefault(require("./AppFrame.styles"));
+const WorkCenter_1 = require("./WorkCenter");
+const browser_window_controller_1 = require("./browser-window-controller");
+const workspace_pane_1 = require("./workspace-pane");
+const workspace_dock_1 = require("../shared/workspace-dock");
+const model_control_1 = require("../browser/model-control");
+const runtime_types_1 = require("../shared/runtime-types");
+const xhWorkspaceWindow = (0, browser_window_controller_1.xhCreateBrowserWindowController)(typeof window === 'undefined' ? undefined : window.__TAURI__);
+/** Center column grid item (session-body building block). The data attribute
+    is a stable contract for bottom-docked panels (terminal): they mirror this
+    column's geometry and reserve inside it, without touching its hashed
+    class names. */
+function CenterColumn(props) {
+    return (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.centerCol, "data-xh-center-column": "", children: (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.regionSurface, "data-swarm-container": props.swarm || undefined, children: props.children }) });
+}
+/** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
+function DetailsColumn(props) {
+    return (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.detailsCol, children: (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.regionSurface, children: props.children }) });
+}
+/**
+ * One drag handle: pointer capture, rAF-throttled dx reports against the drag-start origin.
+ * `side` keys the hover-reveal CSS to the owning column.
+ */
+function DragHandle(props) {
+    const [dragging, setDragging] = (0, react_1.useState)(false);
+    const origin = (0, react_1.useRef)(0);
+    const latest = (0, react_1.useRef)(0);
+    const frame = (0, react_1.useRef)(null);
+    const callbacks = (0, react_1.useRef)({ onStart: props.onStart, onDrag: props.onDrag, onEnd: props.onEnd });
+    callbacks.current = { onStart: props.onStart, onDrag: props.onDrag, onEnd: props.onEnd };
+    const onPointerDown = (0, react_1.useCallback)((e) => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        origin.current = e.clientX;
+        latest.current = e.clientX;
+        callbacks.current.onStart();
+        setDragging(true);
+    }, []);
+    const onPointerMove = (0, react_1.useCallback)((e) => {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId))
+            return;
+        latest.current = e.clientX;
+        frame.current ?? (frame.current = requestAnimationFrame(() => {
+            frame.current = null;
+            callbacks.current.onDrag(latest.current - origin.current);
+        }));
+    }, []);
+    const onPointerUp = (0, react_1.useCallback)((e) => {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId))
+            return;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (frame.current !== null) {
+            cancelAnimationFrame(frame.current);
+            frame.current = null;
+        }
+        callbacks.current.onDrag(latest.current - origin.current);
+        setDragging(false);
+        callbacks.current.onEnd();
+    }, []);
+    return ((0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.handle, style: { left: props.left }, "data-side": props.side, "data-dragging": dragging || undefined, onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp }));
+}
+/** The three-column frame (see module doc). */
+function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
+    const panels = useStore(s => s);
+    const detailsSession = useSessions((s) => {
+        const current = s.current;
+        return current !== undefined && s.byId[current]?.blank === false ? current : undefined;
+    });
+    const frameRef = (0, react_1.useRef)(null);
+    const [assistantVisible, setAssistantVisible] = (0, react_1.useState)(false);
+    const [swarmVisible, setSwarmVisible] = (0, react_1.useState)(false);
+    const { route: { page: centerPage } } = (0, react_1.useSyncExternalStore)(navigation.subscribe, navigation.getSnapshot);
+    const closeCenterPage = navigation.close;
+    (0, react_1.useEffect)(() => navigation.mount(window), [navigation]);
+    const openWorkSession = (id) => {
+        window.dispatchEvent(new CustomEvent('xharness:work:open-session', { detail: id }));
+        closeCenterPage();
+    };
+    const [viewport, setViewport] = (0, react_1.useState)(() => window.innerWidth);
+    const spaceKey = useSessions(state => state.current ?? '__global__');
+    const spaceKeyRef = (0, react_1.useRef)(spaceKey);
+    spaceKeyRef.current = spaceKey;
+    const [spaces, setSpaces] = (0, react_1.useState)(workspace_pane_1.xhLoadBrowserSpaces);
+    const [browserRestored, setBrowserRestored] = (0, react_1.useState)(!window.__TAURI__?.core?.invoke);
+    const restoredRef = (0, react_1.useRef)(browserRestored);
+    restoredRef.current = browserRestored;
+    const spacesRef = (0, react_1.useRef)(spaces);
+    spacesRef.current = spaces;
+    const space = spaces[spaceKey] ?? workspace_pane_1.xhWorkspaceEmpty;
+    const nextWorkspaceId = (0, react_1.useRef)((0, workspace_pane_1.xhNextWorkspaceId)(spaces));
+    (0, react_1.useEffect)(() => {
+        const native = window.__TAURI__;
+        if (!native)
+            return;
+        let disposed = false, stop;
+        native.event.listen('xharness-headless-page', event => {
+            if (disposed)
+                return;
+            const payload = (0, runtime_types_1.objectValue)(event.payload);
+            if (typeof payload.owner !== 'string' || !payload.owner || payload.owner.length > 128)
+                return;
+            const owner = payload.owner;
+            if (payload.closed === true) {
+                setSpaces(all => { const space = all[owner]; if (!space)
+                    return all; const items = space.items.filter(item => item.id !== payload.tabId); return { ...all, [owner]: { ...space, items, activeId: items.some(item => item.id === space.activeId) ? space.activeId : items[0]?.id ?? null } }; });
+                return;
+            }
+            if (typeof payload.tabId !== 'string' || !/^headless:[0-9a-f]{32}$/.test(payload.tabId) || typeof payload.url !== 'string')
+                return;
+            const id = payload.tabId, url = payload.url;
+            try {
+                const parsed = new URL(url);
+                if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
+                    return;
+            }
+            catch {
+                return;
+            }
+            setSpaces(all => {
+                const space = all[owner] ?? workspace_pane_1.xhWorkspaceEmpty;
+                const existing = space.items.find(item => item.id === id);
+                const item = { id, kind: 'browser', source: 'browser', title: new URL(url).hostname, entries: [...(existing?.entries ?? []).slice(-49), url], position: Math.min(existing?.entries.length ?? 0, 49) };
+                const items = space.items.filter(item => !item.id.startsWith('headless:') && !(item.id === space.activeId && item.kind === 'browser' && item.entries.length === 0));
+                // Background chats are updated without selecting them or stealing focus.
+                return { ...all, [owner]: { items: [...items, item], activeId: id, collapsed: existing !== undefined ? space.collapsed === true : owner !== spaceKeyRef.current } };
+            });
+        }).then(unlisten => { if (disposed)
+            unlisten();
+        else
+            stop = unlisten; }).catch(() => { });
+        return () => { disposed = true; stop?.(); };
+    }, []);
+    (0, react_1.useEffect)(() => {
+        if (browserRestored)
+            (0, workspace_pane_1.xhSaveBrowserSpaces)(spaces);
+        nextWorkspaceId.current = Math.max(nextWorkspaceId.current, (0, workspace_pane_1.xhNextWorkspaceId)(spaces));
+    }, [spaces, browserRestored]);
+    (0, react_1.useEffect)(() => {
+        const native = window.__TAURI__;
+        if (!native?.core?.invoke)
+            return;
+        let alive = true;
+        native.core.invoke('desktop_browser_restore').then(snapshot => {
+            if (alive && typeof snapshot === 'string' && snapshot)
+                setSpaces((0, workspace_pane_1.xhLoadBrowserSpaces)(snapshot));
+        }).catch(() => { }).finally(() => { if (alive)
+            setBrowserRestored(true); });
+        return () => { alive = false; };
+    }, []);
+    (0, react_1.useEffect)(() => {
+        const native = window.__TAURI__;
+        if (!native?.core?.invoke || !native.event?.listen)
+            return;
+        return (0, model_control_1.listenModelBrowser)(native, {
+            currentOwner: () => spaceKeyRef.current,
+            ready: () => restoredRef.current,
+            open: request => {
+                const item = { id: `browser:${request.requestId}`, kind: 'browser', source: 'browser',
+                    modelRequestId: request.requestId, title: new URL(request.url).hostname, entries: [request.url], position: 0 };
+                setSpaces(all => ({ ...all, [request.owner]: (0, workspace_pane_1.xhWorkspaceOpen)(all[request.owner] ?? workspace_pane_1.xhWorkspaceEmpty, item, false) }));
+            },
+            close: async (request) => {
+                const current = spacesRef.current[request.owner];
+                if (spaceKeyRef.current !== request.owner || current?.activeId !== request.tabId
+                    || !current.items.some(item => item.id === request.tabId && item.kind === 'browser'))
+                    return false;
+                // Remove presentation first so pending layout work observes unmount.
+                // Destruction must bypass the navigation queue, which may be awaiting
+                // a slow page callback. Exact owner+ID prevents closing its successor.
+                window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id: request.tabId } }));
+                setSpaces(all => ({ ...all, [request.owner]: (0, workspace_pane_1.xhWorkspaceClose)(all[request.owner] ?? workspace_pane_1.xhWorkspaceEmpty, request.tabId) }));
+                await native.core.invoke('desktop_browser_close', { tabId: request.tabId });
+                return true;
+            },
+            cancel: requestId => {
+                window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id: `browser:${requestId}` } }));
+                setSpaces(all => Object.fromEntries(Object.entries(all).map(([owner, space]) => [owner,
+                    space.items.some(item => item.modelRequestId === requestId) ? (0, workspace_pane_1.xhWorkspaceClose)(space, `browser:${requestId}`) : space])));
+                void native.core.invoke('desktop_browser_close', { tabId: `browser:${requestId}` }).catch(() => { });
+            },
+        });
+    }, []);
+    const [workspaceWidth, setWorkspaceWidth] = (0, react_1.useState)(440);
+    const updateSpace = (fn) => setSpaces(all => {
+        const key = spaceKeyRef.current;
+        return { ...all, [key]: fn(all[key] ?? workspace_pane_1.xhWorkspaceEmpty) };
+    });
+    const openWorkspace = (kind, fresh = false, detail = {}) => {
+        const id = kind === 'tool' ? 'tool' : `${kind}:${++nextWorkspaceId.current}`;
+        const source = kind === 'file' || kind === 'plugin' ? detail.source : kind;
+        if (source === undefined)
+            return;
+        const item = { id, kind, source, sessionId: detail.sessionId, relativeTo: detail.relativeTo, gitDiff: detail.gitDiff, title: kind === 'tool' ? '工具详情' : kind === 'file' || kind === 'plugin' ? (detail.title || (detail.gitDiff ? 'Diff · ' + detail.gitDiff : undefined) || source.split(/[\\/]/).at(-1) || '') : '新标签页', entries: detail.url ? [detail.url] : [], position: detail.url ? 0 : -1 };
+        const key = detail.sessionId ?? spaceKeyRef.current;
+        setSpaces(all => ({ ...all, [key]: (0, workspace_pane_1.xhWorkspaceOpen)(all[key] ?? workspace_pane_1.xhWorkspaceEmpty, item, !fresh) }));
+    };
+    const closeWorkspace = (id) => {
+        const panel = space.items.find(item => item.id === id && item.kind === 'plugin');
+        if (panel) {
+            window.dispatchEvent(new CustomEvent('xharness:plugin-panel-close-request', { detail: { capability: panel.source } }));
+            return;
+        }
+        if (id === 'tool')
+            actions.closeDetails();
+        if (space.items.some(item => item.id === id && item.kind === 'browser')) {
+            window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id } }));
+            window.dispatchEvent(new CustomEvent('xharness:browser-close', { detail: { id, owner: spaceKeyRef.current } }));
+        }
+        updateSpace(value => (0, workspace_pane_1.xhWorkspaceClose)(value, id));
+    };
+    (0, react_1.useEffect)(() => {
+        const onOpen = (event) => {
+            const value = event instanceof CustomEvent ? event.detail : undefined;
+            const detail = (0, workspace_pane_1.workspaceOpenDetail)(value);
+            if (detail)
+                openWorkspace(detail.kind, detail.fresh === true, detail);
+        };
+        const onPanelClosed = (event) => {
+            const capability = event instanceof CustomEvent ? (0, runtime_types_1.objectValue)(event.detail).capability : undefined;
+            if (typeof capability !== 'string')
+                return;
+            setSpaces(all => Object.fromEntries(Object.entries(all).map(([owner, space]) => { const panel = space.items.find(item => item.kind === 'plugin' && item.source === capability); return [owner, panel ? (0, workspace_pane_1.xhWorkspaceClose)(space, panel.id) : space]; })));
+        };
+        window.addEventListener('xharness:plugin-panel-closed', onPanelClosed);
+        const onCloseTool = () => updateSpace(value => (0, workspace_pane_1.xhWorkspaceClose)(value, 'tool'));
+        const onToggle = () => {
+            const item = { id: `browser:${++nextWorkspaceId.current}`, kind: 'browser', source: 'browser', title: '新标签页', entries: [], position: -1 };
+            updateSpace(value => value.items.length ? (0, workspace_pane_1.xhWorkspaceToggle)(value) : (0, workspace_pane_1.xhWorkspaceOpen)(value, item));
+        };
+        window.addEventListener('xharness:workspace-open', onOpen);
+        window.addEventListener('xharness:workspace-close-tool', onCloseTool);
+        window.addEventListener(workspace_dock_1.workspaceDockEvents.toggle, onToggle);
+        return () => { window.removeEventListener('xharness:plugin-panel-closed', onPanelClosed); window.removeEventListener('xharness:workspace-open', onOpen); window.removeEventListener('xharness:workspace-close-tool', onCloseTool); window.removeEventListener(workspace_dock_1.workspaceDockEvents.toggle, onToggle); };
+    }, []);
+    (0, react_1.useEffect)(() => {
+        setSpaces(all => {
+            let changed = false;
+            const next = { ...all };
+            for (const [key, value] of Object.entries(next))
+                if (key !== spaceKey && value.items.some(item => item.kind === 'tool')) {
+                    next[key] = (0, workspace_pane_1.xhWorkspaceClose)(value, 'tool');
+                    changed = true;
+                }
+            return changed ? next : all;
+        });
+    }, [spaceKey]);
+    (0, react_1.useEffect)(() => () => { void xhWorkspaceWindow.set(false); }, []);
+    const lastSession = (0, react_1.useRef)(detailsSession);
+    (0, react_1.useLayoutEffect)(() => {
+        if (detailsSession === undefined)
+            return;
+        if (lastSession.current !== undefined && lastSession.current !== detailsSession) {
+            actions.closeDetails();
+        }
+        lastSession.current = detailsSession;
+    }, [actions, detailsSession]);
+    // Track the frame's own box (not the window): rAF-throttled ResizeObserver.
+    (0, react_1.useEffect)(() => {
+        const el = frameRef.current;
+        /* v8 ignore next -- the ref is always attached by effect time: the frame div renders unconditionally. */
+        if (el === null)
+            return;
+        let raf = null;
+        const observer = new ResizeObserver(() => {
+            raf ?? (raf = requestAnimationFrame(() => {
+                raf = null;
+                const width = el.getBoundingClientRect().width;
+                if (width > 0)
+                    setViewport(width);
+            }));
+        });
+        observer.observe(el);
+        return () => {
+            observer.disconnect();
+            if (raf !== null)
+                cancelAnimationFrame(raf);
+        };
+    }, []);
+    // Narrow viewports auto-collapse the sidebar; the store mirror keeps
+    // toggleSidebar's semantics right (narrow toggles flip the manual
+    // re-expand override, stores.ts). A narrow manual expansion is a drawer:
+    // the solver keeps the control rail reserved and never squeezes the center.
+    const narrow = viewport < columns_1.SIDEBAR_AUTO_COLLAPSE;
+    (0, react_1.useEffect)(() => { actions.setNarrow(narrow); }, [actions, narrow]);
+    const sidebarCollapsed = narrow ? !panels.narrowExpanded : panels.sidebar === 0;
+    const sidebarDrawer = narrow && !sidebarCollapsed;
+    const sidebarWidth = sidebarCollapsed || sidebarDrawer ? 56 : panels.sidebar === 0 ? columns_1.SIDEBAR_DEFAULT : (0, columns_1.clampWidth)(panels.sidebar, 264, 420);
+    const workspaceOpen = space.items.length > 0 && space.collapsed !== true;
+    (0, react_1.useEffect)(() => { void xhWorkspaceWindow.set(workspaceOpen, 440); }, [workspaceOpen]);
+    (0, react_1.useEffect)(() => {
+        const publish = () => { window.dispatchEvent(new CustomEvent(workspace_dock_1.workspaceDockEvents.visibility, { detail: { open: workspaceOpen } })); };
+        window.addEventListener(workspace_dock_1.workspaceDockEvents.requestVisibility, publish);
+        publish();
+        return () => window.removeEventListener(workspace_dock_1.workspaceDockEvents.requestVisibility, publish);
+    }, [workspaceOpen]);
+    const workspaceAvailable = viewport - sidebarWidth - 480;
+    const workspaceDrawer = workspaceOpen && workspaceAvailable < 360;
+    const workspaceDockWidth = workspaceOpen && !workspaceDrawer ? Math.min(workspaceWidth, workspaceAvailable) : 0;
+    const cols = (0, columns_1.computeColumns)(viewport - workspaceDockWidth, sidebarCollapsed || sidebarDrawer ? 0 : panels.sidebar === 0 ? columns_1.SIDEBAR_DEFAULT : panels.sidebar, 0, workspaceDockWidth > 0 ? 480 : 640);
+    // Insets belong inside the existing tracks so drag handles and workspace
+    // concessions keep their geometry. SidebarRoot freezes its content width
+    // during collapse, so give it the surface's inner width, not the track width.
+    // Narrow viewports drop the per-column card entirely (AppFrame.css), so the
+    // surface fills its track: the inset has to agree or the drawer would reserve
+    // a gutter it no longer renders.
+    const regionInset = viewport <= 600 ? 0 : 8;
+    const sidebarDrawerWidth = Math.min(viewport - 24, panels.sidebar === 0 ? columns_1.SIDEBAR_DEFAULT : (0, columns_1.clampWidth)(panels.sidebar, 264, 420));
+    const sidebarContentWidth = (sidebarDrawer ? sidebarDrawerWidth : cols.sidebar) - (sidebarCollapsed ? 0 : regionInset * (sidebarDrawer ? 2 : 1) + 2);
+    const colsRef = (0, react_1.useRef)(cols);
+    colsRef.current = cols;
+    // The drag base is the rendered width captured at drag start (grabbing a
+    // concession-clamped panel must not jump back to the stored preference);
+    // it stays frozen for the whole gesture so dx deltas do not compound.
+    const sidebarBase = (0, react_1.useRef)(0);
+    const workspaceBase = (0, react_1.useRef)(0);
+    // Track-level transitions pause for the whole gesture: eased tracks would
+    // detach the column edge from the pointer (AppFrame.module.css).
+    const [dragging, setDragging] = (0, react_1.useState)(false);
+    const onDragEnd = (0, react_1.useCallback)(() => { setDragging(false); }, []);
+    const onSidebarStart = (0, react_1.useCallback)(() => { sidebarBase.current = colsRef.current.sidebar; setDragging(true); }, []);
+    const onSidebarDrag = (0, react_1.useCallback)((dx) => {
+        actions.setSidebar(sidebarBase.current + dx);
+    }, [actions]);
+    const onWorkspaceStart = () => { workspaceBase.current = workspaceDockWidth; setDragging(true); };
+    const onWorkspaceDrag = (dx) => { if (dx < 0)
+        setWorkspaceWidth(Math.max(workspaceBase.current, Math.min(900, workspaceAvailable, workspaceBase.current - dx))); };
+    const updateItem = (id, patch) => updateSpace(value => ({ ...value, items: value.items.map(item => item.id === id ? { ...item, ...patch } : item) }));
+    return ((0, jsx_runtime_1.jsxs)("div", { ref: frameRef, className: AppFrame_styles_1.default.frame, style: { gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${workspaceDockWidth}px`, ...{ '--xh-region-inset': `${regionInset}px` } }, "data-xhworkspace-open": workspaceOpen || undefined, "data-xhworkspace-drawer": workspaceDrawer || undefined, "data-sidebar-collapsed": sidebarCollapsed || undefined, "data-sidebar-drawer": sidebarDrawer || undefined, "data-details-collapsed": !workspaceOpen || undefined, "data-dragging": dragging || undefined, children: [sidebarDrawer && (0, jsx_runtime_1.jsx)("button", { type: "button", className: "xh-sidebar-scrim", "aria-label": navigator.language.startsWith('zh') ? '关闭侧栏' : 'Close sidebar', onClick: actions.toggleSidebar }), (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.sidebarCol, style: sidebarDrawer ? { width: sidebarDrawerWidth } : undefined, onClickCapture: event => {
+                    const target = event.target;
+                    // Shell controls and peer page entries own their transitions. Do not
+                    // insert an intermediate chat route (or close the replayed destination).
+                    if (target instanceof Element && target.closest('[data-shell-navigation],[data-sidebar-toggle],[data-xharness-assistant-nav],[data-xharness-plugin-nav],[data-xharness-work-nav]'))
+                        return;
+                    if (centerPage !== 'chat')
+                        closeCenterPage();
+                }, onClick: event => {
+                    // Row actions stop propagation; dismiss only a completed navigation
+                    // click after the row has handled it, keeping its menu mounted.
+                    const target = event.target;
+                    if (sidebarDrawer && target instanceof Element && target.closest('[role="treeitem"][aria-selected]'))
+                        actions.toggleSidebar();
+                }, children: (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.regionSurface, children: renderSlot('sidebar', {
+                        collapsed: sidebarCollapsed,
+                        width: sidebarContentWidth,
+                        navigation,
+                    }) }) }), (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(CenterColumn, { swarm: centerPage === 'swarm', children: (0, jsx_runtime_1.jsxs)("div", { className: "xhfeature-shell", "data-swarm-active": centerPage === 'swarm' || undefined, children: [(0, jsx_runtime_1.jsx)("div", { className: "xhswarm-seat", hidden: centerPage !== 'swarm', children: centerPage === 'swarm' && renderSlot('swarm.center', { showConversation: setSwarmVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhassistant-seat", hidden: centerPage !== 'assistant', children: centerPage === 'assistant' && renderSlot('assistant.center', { showConversation: setAssistantVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhwork-conversation", hidden: centerPage !== 'chat' && !(centerPage === 'assistant' && assistantVisible) && !(centerPage === 'swarm' && swarmVisible), "aria-label": centerPage === 'assistant' ? 'Little X chat' : undefined, children: renderSlot('conversation', {}) }), centerPage === 'plugins' && (0, jsx_runtime_1.jsxs)("main", { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px clamp(20px, 5vw, 56px)' }, children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", style: { cursor: 'pointer', background: 'none', border: 0, color: 'var(--dsw-alias-label-secondary)', padding: '0 0 24px', font: 'inherit' }, "aria-label": "Back to chat", onClick: closeCenterPage, children: ["\u2190 ", navigator.language.startsWith('zh') ? '返回对话' : 'Back to chat'] }), renderSlot('plugins.center', {})] }), centerPage === 'work' && (0, jsx_runtime_1.jsx)(WorkCenter_1.WorkCenter, { close: closeCenterPage, renderTasks: () => renderSlot('work.center.tasks', { openSession: openWorkSession }), renderAutomations: () => renderSlot('work.center.automations', { openSession: openWorkSession }), renderExecutions: () => renderSlot('work.center.executions', { openSession: openWorkSession }) })] }) }), workspaceDrawer && (0, jsx_runtime_1.jsx)("button", { type: "button", className: AppFrame_styles_1.default.workspaceScrim, "aria-label": "\u5173\u95ED\u5DE5\u4F5C\u533A", onClick: () => updateSpace(value => ({ ...value, collapsed: true })) }), (0, jsx_runtime_1.jsx)(DetailsColumn, { children: (0, jsx_runtime_1.jsx)(workspace_pane_1.XhWorkspacePane, { space: space, spaces: spaces, open: workspaceOpen, sessionId: spaceKey === '__global__' ? null : spaceKey, renderSlot: renderSlot, onSelect: id => updateSpace(value => ({ ...value, activeId: id })), onClose: closeWorkspace, onUpdate: updateItem, onUpdateOwner: (owner, id, patch) => setSpaces(all => {
+                                const prior = all[owner];
+                                if (!prior?.items.some(item => item.id === id))
+                                    return all;
+                                return { ...all, [owner]: { ...prior, items: prior.items.map(item => item.id === id ? { ...item, ...patch } : item) } };
+                            }), onNewBrowser: () => openWorkspace('browser', true) }) })] }), (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.overlayLayer, "data-shell-overlay": true, children: renderSlot('shell.overlay', {}) }), !sidebarCollapsed && !sidebarDrawer && (0, jsx_runtime_1.jsx)(DragHandle, { side: "sidebar", left: cols.sidebar, onStart: onSidebarStart, onDrag: onSidebarDrag, onEnd: onDragEnd }), workspaceDockWidth > 0 && (0, jsx_runtime_1.jsx)(DragHandle, { side: "details", left: viewport - workspaceDockWidth, onStart: onWorkspaceStart, onDrag: onWorkspaceDrag, onEnd: onDragEnd })] }));
+}
+
+},
+"src/modules/layout/columns.js": function(module, exports, require) {
+// source: src/modules/layout/columns.ts
+
+"use strict";
+/**
+ * Pure concession-chain column solver for the three-column AppFrame.
+ * Chain order is fixed by contract: keep center >= CENTER_MIN by shrinking
+ * details, then auto-closing it (derived zero width — preferred width
+ * preferences are never rewritten, so widening the window restores them).
+ * The sidebar never concedes: its rendered width is always the drag
+ * preference (or the collapsed rail), and center absorbs any remaining
+ * deficit as the last resort. Inputs are the layout store's plain width
+ * preferences (0 = closed); a closed sidebar resolves to the fixed
+ * SIDEBAR_COLLAPSED control rail while closed details resolve to zero width.
+ * The SIDEBAR_AUTO_COLLAPSE breakpoint is consumed by AppFrame, which decides
+ * the effective sidebar preference before solving; the solver itself stays
+ * breakpoint-free.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DETAILS_DEFAULT = exports.DETAILS_MAX = exports.DETAILS_MIN = exports.SIDEBAR_AUTO_COLLAPSE = exports.SIDEBAR_COLLAPSED = exports.SIDEBAR_DEFAULT = exports.SIDEBAR_MAX = exports.SIDEBAR_MIN = exports.CENTER_MIN = void 0;
+exports.clampWidth = clampWidth;
+exports.computeColumns = computeColumns;
+// Contract-frozen geometry: the three-column concession chain's fixed points.
+/** Center column floor; only the final fallback may go below it. */
+exports.CENTER_MIN = 640;
+/** Sidebar drag clamp floor. */
+exports.SIDEBAR_MIN = 264;
+/** Sidebar drag clamp ceiling. */
+exports.SIDEBAR_MAX = 420;
+/** Sidebar width before any user drag. */
+exports.SIDEBAR_DEFAULT = 280;
+/** Closed-sidebar rail: a 24px icon column between 16px horizontal paddings. */
+exports.SIDEBAR_COLLAPSED = 56;
+/** Viewport width below which the sidebar auto-collapses to the rail (deepsuite
+ * LG breakpoint); a manual toggle below it re-expands over the squeezed center
+ * (stores.ts narrowExpanded). */
+exports.SIDEBAR_AUTO_COLLAPSE = 1024;
+/** Details drag clamp floor. */
+exports.DETAILS_MIN = 300;
+/** Details drag clamp ceiling. */
+exports.DETAILS_MAX = 520;
+/** Details width before any user drag. */
+exports.DETAILS_DEFAULT = 360;
+/**
+ * Clamp a panel width into its contract range.
+ * @param px - requested width.
+ * @param min - range lower bound.
+ * @param max - range upper bound.
+ * @returns the clamped width.
+ */
+function clampWidth(px, min, max) {
+    return Math.min(max, Math.max(min, Math.round(px)));
+}
+/**
+ * Solve the three column widths for one viewport frame. Pure: no hysteresis —
+ * the output is a function of (viewport, preferences) only, so recovery on
+ * re-widening is automatic. Preferences re-clamp here because they cross the
+ * store boundary and callers may still supply stale ranges.
+ * @param viewport - available frame width in px.
+ * @param sidebar - sidebar width preference in px (0 = closed).
+ * @param details - details width preference in px (0 = closed).
+ * @param minCenter - center floor; the workspace dock may use its current constrained floor.
+ * @returns resolved widths; details 0 means visually closed (never unmounted), while a closed sidebar keeps its compact rail.
+ */
+function computeColumns(viewport, sidebar, details, minCenter = exports.CENTER_MIN) {
+    // The sidebar is fixed at its preference (or the rail) — it never concedes.
+    const s = sidebar === 0 ? exports.SIDEBAR_COLLAPSED : clampWidth(sidebar, exports.SIDEBAR_MIN, exports.SIDEBAR_MAX);
+    const d0 = details === 0 ? 0 : clampWidth(details, exports.DETAILS_MIN, exports.DETAILS_MAX);
+    // Step 1: everything fits at preferred widths.
+    if (s + d0 + minCenter <= viewport)
+        return { sidebar: s, center: viewport - s - d0, details: d0 };
+    // Step 2: shrink details toward its minimum.
+    const d1 = d0 === 0 ? 0 : Math.max(exports.DETAILS_MIN, viewport - s - minCenter);
+    if (s + d1 + minCenter <= viewport)
+        return { sidebar: s, center: minCenter, details: d1 };
+    // Step 3: auto-close details (derived — preferences untouched); center
+    // absorbs any remaining deficit (may drop below CENTER_MIN).
+    return { sidebar: s, center: Math.max(0, viewport - s), details: 0 };
+}
+
+},
+"src/modules/layout/AppFrame.styles.js": function(module, exports, require) {
+// source: src/modules/layout/AppFrame.styles.ts
+
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const AppFrame_css_1 = __importDefault(require("./AppFrame.css"));
+const views_types_1 = require("../views-types");
+(0, views_types_1.installStyles)("@xharness/dsh-client-ui-layout/AppFrame.module.css", "@xharness/dsh-client-ui-layout", AppFrame_css_1.default);
+const styles = {
+    "centerCol": "_84hhiq_centerCol",
+    "detailsCol": "_84hhiq_detailsCol",
+    "frame": "_84hhiq_frame",
+    "handle": "_84hhiq_handle",
+    "overlayLayer": "_84hhiq_overlayLayer",
+    "regionSurface": "_84hhiq_regionSurface",
+    "sidebarCol": "_84hhiq_sidebarCol",
+    "workspaceScrim": "_84hhiq_workspaceScrim"
+};
+exports.default = styles;
+
+},
+"src/modules/layout/AppFrame.css": function(module, exports, require) {
+// source: src/modules/layout/AppFrame.css
+
+Object.defineProperty(exports, '__esModule', { value: true });
+exports.default = "._84hhiq_frame{background:var(--dsw-alias-bg-base);height:100%;transition:grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);grid-template-rows:100%;display:grid;position:relative;overflow:hidden}._84hhiq_frame[data-dragging]{transition:none}@media (prefers-reduced-motion:reduce){._84hhiq_frame{transition:none}}._84hhiq_sidebarCol{background:var(--dsw-specific-sidebar-fill);border-right:1px solid var(--dsw-alias-border-l1);min-width:0;overflow:hidden}._84hhiq_centerCol{isolation:isolate;z-index:0;flex-direction:column;min-width:0;display:flex;overflow:hidden}._84hhiq_detailsCol{isolation:isolate;z-index:0;border-left:1px solid var(--dsw-alias-border-l2);min-width:0;overflow:hidden}._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol{border-left:none}._84hhiq_handle{cursor:col-resize;z-index:2;touch-action:none;width:8px;transition:left var(--ds-transition-duration-slow) var(--ds-ease-in-out);margin-left:-4px;position:absolute;top:0;bottom:0}._84hhiq_frame[data-dragging] ._84hhiq_handle{transition:none}@media (prefers-reduced-motion:reduce){._84hhiq_handle{transition:none}}._84hhiq_handle[data-side=details]:after{content:\"\";box-sizing:border-box;background:var(--dsw-alias-button-floating-fill);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);opacity:0;width:12px;height:32px;transition:opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out), background var(--ds-transition-duration-slow) var(--ds-ease-in-out);border-radius:10px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}._84hhiq_detailsCol:hover~._84hhiq_handle[data-side=details]:after,._84hhiq_handle[data-side=details]:hover:after,._84hhiq_handle[data-side=details][data-dragging=true]:after{opacity:1}._84hhiq_handle[data-side=details]:hover:after,._84hhiq_handle[data-side=details][data-dragging=true]:after{background:var(--dsw-alias-button-floating-hover);border-color:var(--dsw-alias-border-l3)}._84hhiq_overlayLayer{z-index:20;pointer-events:none;position:absolute;inset:0}._84hhiq_overlayLayer>*{pointer-events:auto}._84hhiq_frame:not([data-xhworkspace-open]){transition:none}._84hhiq_handle[data-side=details]{cursor:w-resize}.xhworkspace{height:100%;min-width:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.xhworkspace[hidden]{display:none}.xhworkspace-tabs{display:flex;align-items:center;flex:none;min-height:40px;gap:2px;padding:4px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-x:auto;scrollbar-width:thin}.xhworkspace-tab{display:flex;align-items:center;flex:none;max-width:180px;min-width:90px;height:35px;border-radius:7px 7px 0 0;color:var(--dsw-alias-label-tertiary);position:relative}.xhworkspace-tab[data-active]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}.xhworkspace-tab+.xhworkspace-tab:after{content:\"\";position:absolute;left:-1.5px;top:10px;bottom:10px;width:1px;background:var(--dsw-alias-border-l2)}.xhworkspace-tab+.xhworkspace-tab[data-active]:after,.xhworkspace-tab[data-active]+.xhworkspace-tab:after{display:none}.xhworkspace-tab>button[role=tab]{display:flex;align-items:center;gap:6px;min-width:0;flex:1;padding:0 8px;border:0;background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer}.xhworkspace-kind{flex:none}.xhworkspace-kind svg{display:block}.xhworkspace-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.xhworkspace-tab-close,.xhworkspace-new{flex:none;width:25px;height:25px;border:0;border-radius:5px;background:none;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer}.xhworkspace-tab-close:hover,.xhworkspace-new:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.xhworkspace-body{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;overflow:hidden}.xhworkspace-item{flex:1;min-height:0;min-width:0;overflow:hidden}.xhworkspace-item[hidden]{display:none}.xhworkspace-tool>div>div:first-child{display:none}._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{position:absolute;right:0;top:0;bottom:0;width:min(560px,calc(100% - 44px));z-index:10;box-shadow:-14px 0 40px #0004}._84hhiq_workspaceScrim{position:absolute;inset:0;z-index:9;border:0;background:#0008}\n._84hhiq_sidebarCol{grid-column:1;grid-row:1}._84hhiq_centerCol{grid-column:2;grid-row:1}._84hhiq_detailsCol{grid-column:3;grid-row:1}._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol{position:absolute;left:0;top:0;bottom:0;z-index:30;box-shadow:12px 0 32px #0003;max-width:calc(100% - 24px)}.xh-sidebar-scrim{position:absolute;inset:0;z-index:29;border:0;padding:0;background:#0005}\n/* Absolute drawers use the frame, not the reserved 56px / zero-width grid\n   track, as their containing block. Docked occupants keep explicit tracks. */\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol,._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{grid-area:auto}\n\n/* Single resident conversation plus optional feature center. */\n.xhfeature-shell{display:flex;flex:1;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}\n.xhfeature-shell>.xhwork-conversation{flex:1;min-width:0;min-height:0;width:100%}\n.xhfeature-shell>.xhwork-conversation[hidden]{display:none}\n\n.xhfeature-shell{flex-direction:column}.xhassistant-seat[hidden]{display:none}.xhassistant-seat{flex:none;min-width:0}\n/* Each column owns an inset surface. Keep the tracks and their resize handles\n   unchanged; the gutters and rounded clipping live inside those tracks. */\n._84hhiq_frame{--xh-region-inset:8px;background:var(--dsw-specific-sidebar-fill)}\n._84hhiq_sidebarCol,._84hhiq_centerCol,._84hhiq_detailsCol{box-sizing:border-box;min-height:0}\n._84hhiq_sidebarCol,._84hhiq_detailsCol{display:flex;flex-direction:column;background:transparent;border:0}\n._84hhiq_sidebarCol{padding:var(--xh-region-inset) 0 var(--xh-region-inset) var(--xh-region-inset)}\n._84hhiq_centerCol{padding:var(--xh-region-inset)}\n._84hhiq_detailsCol{padding:var(--xh-region-inset) var(--xh-region-inset) var(--xh-region-inset) 0}\n._84hhiq_regionSurface{box-sizing:border-box;flex:1;display:flex;flex-direction:column;width:100%;min-width:0;min-height:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-base)}\n._84hhiq_sidebarCol>._84hhiq_regionSurface{background:var(--dsw-specific-sidebar-fill)}\n._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol{padding:0}\n._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol>._84hhiq_regionSurface{border:0;border-radius:0}\n._84hhiq_frame[data-sidebar-collapsed] ._84hhiq_sidebarCol{padding:var(--xh-region-inset) 0}\n._84hhiq_frame[data-sidebar-collapsed] ._84hhiq_sidebarCol>._84hhiq_regionSurface{border:0;border-radius:0;background:transparent}\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol,._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{padding:var(--xh-region-inset);box-shadow:none}\n/* Narrow viewports have no room for a gutter around a floating card: the\n   surface fills its track and the content edge is the screen edge. Keyed to the\n   same 600px breakpoint AppFrame.tsx uses for --xh-region-inset so the inset and\n   the chrome can never disagree. */\n@media (max-width:600px){\n  ._84hhiq_sidebarCol>._84hhiq_regionSurface,._84hhiq_centerCol>._84hhiq_regionSurface,._84hhiq_detailsCol>._84hhiq_regionSurface{border:0;border-radius:0}\n}\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol>._84hhiq_regionSurface{box-shadow:12px 0 32px #0003}\n._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol>._84hhiq_regionSurface{box-shadow:-14px 0 40px #0004}\n";
+
+},
+"src/modules/views-types.js": function(module, exports, require) {
+// source: src/modules/views-types.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.classNames = classNames;
+exports.installStyles = installStyles;
+function classNames(...values) { return values.filter(Boolean).join(' '); }
+/** Exact legacy style identity, but editable source rather than compiled input. */
+function installStyles(id, plugin, css) {
+    if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css=${JSON.stringify(id)}]`) !== null)
+        return;
+    const tag = document.createElement('style');
+    tag.dataset.plugin = plugin;
+    tag.dataset.pluginCss = id;
+    tag.textContent = css;
+    document.head.appendChild(tag);
+}
+
+},
+"src/modules/layout/WorkCenter.js": function(module, exports, require) {
+// source: src/modules/layout/WorkCenter.tsx
+
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.WorkCenter = WorkCenter;
+const jsx_runtime_1 = require("react/jsx-runtime");
+const react_1 = require("react");
+const WorkCenter_css_1 = __importDefault(require("./WorkCenter.css"));
+const views_types_1 = require("../views-types");
+(0, views_types_1.installStyles)('@xharness/dsh-client-ui-layout/WorkCenter.css', '@xharness/dsh-client-ui-layout', WorkCenter_css_1.default);
+/** Presentation only: occupants retain their existing data/runtime ownership. */
+function WorkCenter({ close, renderTasks, renderAutomations, renderExecutions }) {
+    const tabs = renderExecutions ? ['tasks', 'automations', 'executions'] : ['tasks', 'automations'];
+    const [tab, setTab] = (0, react_1.useState)('tasks');
+    const zh = document.documentElement.lang.startsWith('zh');
+    const switchTab = (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key))
+            return;
+        event.preventDefault();
+        const index = tabs.findIndex(t => t === tab);
+        const next = event.key === 'Home' ? tabs[0] : event.key === 'End' ? (tabs[tabs.length - 1] ?? 'tasks') : (tabs[(index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length] ?? 'tasks');
+        setTab(next);
+        event.currentTarget.parentElement?.querySelector(`[data-tab="${next}"]`)?.focus();
+    };
+    return (0, jsx_runtime_1.jsx)("main", { className: "xhwork-page", "aria-label": zh ? '任务与自动化' : 'Tasks and automations', children: (0, jsx_runtime_1.jsxs)("div", { className: "xhwork-page-inner", children: [(0, jsx_runtime_1.jsxs)("button", { className: "xhwork-back", type: "button", onClick: close, "aria-label": zh ? '返回对话' : 'Back to chat', children: ["\u2190 ", zh ? '返回对话' : 'Back to chat'] }), (0, jsx_runtime_1.jsx)("h1", { children: zh ? '任务与自动化' : 'Tasks & automations' }), (0, jsx_runtime_1.jsxs)("div", { className: "xhwork-tabs", role: "tablist", "aria-label": zh ? '任务视图' : 'Work views', children: [(0, jsx_runtime_1.jsx)("button", { type: "button", role: "tab", "data-tab": "tasks", id: "xhwork-tab-tasks", "aria-controls": "xhwork-content", "aria-selected": tab === 'tasks', tabIndex: tab === 'tasks' ? 0 : -1, onKeyDown: switchTab, onClick: () => setTab('tasks'), children: zh ? '任务' : 'Tasks' }), (0, jsx_runtime_1.jsx)("button", { type: "button", role: "tab", "data-tab": "automations", id: "xhwork-tab-automations", "aria-controls": "xhwork-content", "aria-selected": tab === 'automations', tabIndex: tab === 'automations' ? 0 : -1, onKeyDown: switchTab, onClick: () => setTab('automations'), children: zh ? '自动化' : 'Automations' }), renderExecutions && (0, jsx_runtime_1.jsx)("button", { type: "button", role: "tab", "data-tab": "executions", id: "xhwork-tab-executions", "aria-controls": "xhwork-content", "aria-selected": tab === 'executions', tabIndex: tab === 'executions' ? 0 : -1, onKeyDown: switchTab, onClick: () => setTab('executions'), children: zh ? '执行' : 'Executions' })] }), (0, jsx_runtime_1.jsx)("section", { id: "xhwork-content", role: "tabpanel", "aria-labelledby": `xhwork-tab-${tab}`, children: tab === 'tasks' ? renderTasks() : tab === 'automations' ? renderAutomations() : renderExecutions?.() })] }) });
+}
+
+},
+"src/modules/layout/WorkCenter.css": function(module, exports, require) {
+// source: src/modules/layout/WorkCenter.css
+
+Object.defineProperty(exports, '__esModule', { value: true });
+exports.default = ".xhwork-conversation{display:flex;flex:1;min-height:0;min-width:0;flex-direction:column;position:relative}.xhwork-conversation[hidden]{display:none}\n.xhwork-page{flex:1;min-width:0;min-height:0;overflow:auto;color:var(--dsw-alias-label-primary)}\n.xhwork-page-inner{box-sizing:border-box;max-width:960px;margin:0 auto;padding:24px clamp(20px,4vw,56px) 48px}\n.xhwork-page button{font:inherit;color:inherit;cursor:pointer}.xhwork-back{display:block;margin:0 0 28px;padding:0;border:0;background:none;color:var(--dsw-alias-label-secondary)!important;font-size:13px!important}\n.xhwork-page h1{margin:0 0 24px;font-size:28px;line-height:1.25;font-weight:650;letter-spacing:-.5px;overflow-wrap:anywhere}\n.xhwork-tabs{display:flex;gap:24px;overflow-x:auto;margin-bottom:20px;border-bottom:1px solid var(--dsw-alias-border-l2)}\n.xhwork-tabs button{flex-shrink:0;white-space:nowrap;border:0;border-bottom:2px solid transparent;background:none;padding:10px 0 12px;font-size:14px;font-weight:500;color:var(--dsw-alias-label-tertiary)}\n.xhwork-tabs button[aria-selected=true]{color:var(--dsw-alias-label-primary);border-bottom-color:currentColor}\n.xhwork-page button:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:3px;border-radius:3px}\n.xhwork-page .xhtask-head{padding:0 0 16px;border-bottom:1px solid var(--dsw-alias-border-l1)}\n.xhwork-page .xhtask-head-title{font-size:16px}.xhwork-page .xhtask-body{overflow:visible;padding:16px 0}.xhwork-page .xhtask-group{margin-bottom:20px}.xhwork-page .xhtask-row{min-height:42px}\n.xhwork-task-title{padding:0;border:0;background:none;text-align:left;font:inherit}.xhwork-task-title:hover{text-decoration:underline}\n@media(max-width:600px){.xhwork-page h1{font-size:24px}.xhwork-page-inner{padding-top:20px}.xhwork-back{margin-bottom:24px}}\n";
+
+},
+"src/modules/layout/browser-window-controller.js": function(module, exports, require) {
+// source: src/modules/layout/browser-window-controller.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.xhCreateBrowserWindowController = xhCreateBrowserWindowController;
+/** Full rightward native lease; partial growth never replaces the left dock. */
+function xhCreateBrowserWindowController(tauri) {
+    const api = tauri?.window;
+    const LogicalSize = api?.LogicalSize ?? tauri?.dpi?.LogicalSize;
+    let lease = null;
+    let queue = Promise.resolve(0);
+    const resize = async (open, preferredWidth) => {
+        if (typeof api?.getCurrentWindow !== 'function' || typeof api.currentMonitor !== 'function' || typeof LogicalSize !== 'function')
+            return 0;
+        const nativeWindow = api.getCurrentWindow();
+        if (!nativeWindow || typeof nativeWindow.setSize !== 'function')
+            return 0;
+        const size = await nativeWindow.innerSize(), scale = await nativeWindow.scaleFactor();
+        if (!Number.isFinite(scale) || scale <= 0)
+            return 0;
+        const logicalWidth = size.width / scale, logicalHeight = size.height / scale;
+        const unchanged = lease !== null && Math.abs(logicalWidth - lease.baseWidth - lease.addedWidth) <= 8;
+        if (!unchanged)
+            lease = null;
+        if (!open) {
+            if (lease !== null)
+                await nativeWindow.setSize(new LogicalSize(lease.baseWidth, logicalHeight));
+            lease = null;
+            return 0;
+        }
+        if (await nativeWindow.isMaximized() || await nativeWindow.isFullscreen())
+            return lease?.addedWidth ?? 0;
+        const monitor = await api.currentMonitor();
+        if (!monitor?.workArea?.position || !monitor.workArea.size)
+            return lease?.addedWidth ?? 0;
+        const position = await nativeWindow.outerPosition(), outer = await nativeWindow.outerSize();
+        const wanted = Math.max(360, Math.min(900, Math.round(preferredWidth)));
+        const rightEdge = monitor.workArea.position.x + monitor.workArea.size.width;
+        const spare = Math.max(0, (rightEdge - position.x - outer.width) / scale - 8), priorAdded = lease?.addedWidth ?? 0;
+        if (spare + priorAdded < wanted) {
+            if (lease !== null)
+                await nativeWindow.setSize(new LogicalSize(lease.baseWidth, logicalHeight));
+            lease = null;
+            return 0;
+        }
+        const baseWidth = lease?.baseWidth ?? logicalWidth;
+        if (Math.abs(wanted - priorAdded) > 1)
+            await nativeWindow.setSize(new LogicalSize(baseWidth + wanted, logicalHeight));
+        lease = { baseWidth, addedWidth: wanted };
+        return wanted;
+    };
+    return { set(open, preferredWidth = 440) {
+            queue = queue.catch(() => 0).then(() => resize(open, preferredWidth));
+            return queue.catch(() => 0);
+        } };
+}
+
+},
+"src/modules/layout/workspace-pane.js": function(module, exports, require) {
+// source: src/modules/layout/workspace-pane.tsx
+
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.xhWorkspaceStorageKey = exports.xhWorkspaceEmpty = void 0;
+exports.xhLoadBrowserSpaces = xhLoadBrowserSpaces;
+exports.xhSaveBrowserSpaces = xhSaveBrowserSpaces;
+exports.xhNextWorkspaceId = xhNextWorkspaceId;
+exports.xhWorkspaceOpen = xhWorkspaceOpen;
+exports.xhWorkspaceToggle = xhWorkspaceToggle;
+exports.xhWorkspaceClose = xhWorkspaceClose;
+exports.XhWorkspacePane = XhWorkspacePane;
+exports.workspaceOpenDetail = workspaceOpenDetail;
+const jsx_runtime_1 = require("react/jsx-runtime");
+const React = __importStar(require("react"));
+const retained_pages_1 = require("./retained-pages");
+const file_display_options_1 = require("../shared/generated/file-display-options");
+const runtime_types_1 = require("../shared/runtime-types");
+exports.xhWorkspaceEmpty = { items: [], activeId: null };
+exports.xhWorkspaceStorageKey = 'xharness:browser-spaces-v1';
+let xhBrowserPersistQueue = Promise.resolve();
+let xhLastBrowserSnapshot = null;
+const arrayValue = (value) => Array.isArray(value) ? value : [];
+/** Historical bounded JSON currency: only browser items are persisted. */
+function xhLoadBrowserSpaces(snapshot) {
+    try {
+        const stored = JSON.parse(snapshot ?? localStorage.getItem(exports.xhWorkspaceStorageKey) ?? '{}');
+        if (!stored || typeof stored !== 'object' || Array.isArray(stored))
+            return {};
+        const result = {};
+        for (const [key, rawSpace] of Object.entries((0, runtime_types_1.objectValue)(stored)).slice(-50)) {
+            const space = (0, runtime_types_1.objectValue)(rawSpace);
+            if (typeof key !== 'string' || !Array.isArray(space.items))
+                continue;
+            const items = arrayValue(space.items).map(runtime_types_1.objectValue).filter(item => item.kind === 'browser' && typeof item.id === 'string' && /^[A-Za-z0-9:_-]{1,64}$/.test(item.id)).slice(-128).flatMap(item => {
+                if (typeof item.id !== 'string')
+                    return [];
+                const valid = arrayValue(item.entries).filter((url) => {
+                    try {
+                        if (typeof url !== 'string')
+                            return false;
+                        const parsed = new URL(url);
+                        return url.length <= 4096 && ['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password;
+                    }
+                    catch {
+                        return false;
+                    }
+                });
+                return [{ id: item.id, kind: 'browser', source: 'browser', title: typeof item.title === 'string' ? item.title.slice(0, 160) : '新标签页', entries: valid.slice(-50), position: typeof item.position === 'number' && Number.isInteger(item.position) ? item.position - Math.max(0, valid.length - 50) : -1 }];
+            });
+            for (const item of items)
+                item.position = Math.max(-1, Math.min(item.position, item.entries.length - 1));
+            const first = items[0];
+            if (first !== undefined)
+                result[key] = { items, activeId: typeof space.activeId === 'string' && items.some(item => item.id === space.activeId) ? space.activeId : first.id };
+        }
+        return result;
+    }
+    catch {
+        return {};
+    }
+}
+function xhSaveBrowserSpaces(spaces) {
+    const stored = {};
+    for (const [key, space] of Object.entries(spaces).slice(-50)) {
+        const items = space.items.filter(item => item.kind === 'browser');
+        if (items.length)
+            stored[key] = { items, activeId: space.activeId };
+    }
+    const snapshot = JSON.stringify(xhLoadBrowserSpaces(JSON.stringify(stored)));
+    try {
+        localStorage.setItem(exports.xhWorkspaceStorageKey, snapshot);
+    }
+    catch { /* Origin storage can be blocked. */ }
+    const native = window.__TAURI__;
+    if (native?.core?.invoke && snapshot !== xhLastBrowserSnapshot) {
+        xhLastBrowserSnapshot = snapshot;
+        xhBrowserPersistQueue = xhBrowserPersistQueue.catch(() => { }).then(() => native.core.invoke('desktop_browser_persist', { snapshot })).catch(() => { xhLastBrowserSnapshot = null; });
+    }
+}
+function xhNextWorkspaceId(spaces) {
+    return Math.max(0, ...Object.values(spaces).flatMap(space => space.items.map(item => Number(item.id.match(/^browser:(\d+)$/)?.[1]) || 0)));
+}
+function xhWorkspaceOpen(space, item, reuse = true) {
+    const existing = reuse && space.items.find(value => value.kind === item.kind && value.source === item.source && value.gitDiff === item.gitDiff && value.relativeTo === item.relativeTo && value.sessionId === item.sessionId);
+    const visible = space.collapsed === true ? { ...space, collapsed: false } : space;
+    if (existing)
+        return { ...visible, activeId: existing.id };
+    return { ...visible, items: [...space.items, item], activeId: item.id };
+}
+/** Hiding is not tab destruction: retain the selected item, draft and history. */
+function xhWorkspaceToggle(space) {
+    return space.items.length ? { ...space, collapsed: space.collapsed !== true } : space;
+}
+function xhWorkspaceClose(space, id) {
+    const index = space.items.findIndex(item => item.id === id);
+    if (index < 0)
+        return space;
+    const items = space.items.filter(item => item.id !== id);
+    return { ...space, items, activeId: space.activeId === id ? (items[Math.min(index, items.length - 1)]?.id ?? null) : space.activeId };
+}
+const WORKSPACE_IMAGE_URL = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i;
+/** Static type marks, not fetched favicons, keep the tab strip cheap in memory. */
+function xhWorkspaceBrowserMark(item) {
+    const entry = item.position >= 0 ? item.entries[item.position] : item.entries[item.entries.length - 1];
+    const image = entry !== undefined && (entry.startsWith('data:image/') || WORKSPACE_IMAGE_URL.test(entry));
+    return (0, jsx_runtime_1.jsx)("svg", { className: "xhworkspace-tabicon", viewBox: "0 0 24 24", width: "13", height: "13", fill: "none", stroke: "currentColor", strokeWidth: "1.8", strokeLinecap: "round", strokeLinejoin: "round", children: image ? (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }), (0, jsx_runtime_1.jsx)("circle", { cx: "8.5", cy: "8.5", r: "1.5" }), (0, jsx_runtime_1.jsx)("path", { d: "m21 15-5-5L5 21" })] }) : (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)("circle", { cx: "12", cy: "12", r: "10" }), (0, jsx_runtime_1.jsx)("path", { d: "M2 12h20" }), (0, jsx_runtime_1.jsx)("path", { d: "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" })] }) });
+}
+function XhWorkspacePane({ space, spaces, open, sessionId, renderSlot, onSelect, onClose, onUpdate, onUpdateOwner, onNewBrowser }) {
+    const active = space.items.find(item => item.id === space.activeId);
+    const owner = sessionId ?? '__global__';
+    const all = spaces ?? { [owner]: space };
+    const [pages, setPages] = React.useState([]);
+    const [, tick] = React.useState(0);
+    const next = (0, retained_pages_1.planRetainedPages)(pages, all, owner, space.activeId, open, Date.now());
+    if (next !== pages)
+        setPages(next);
+    React.useEffect(() => {
+        const deadlines = next.filter(page => all[page.owner]?.items.find(item => item.id === page.id)?.kind !== 'plugin' && (!open || page.owner !== owner || page.id !== space.activeId))
+            .map(page => page.usedAt + retained_pages_1.RETAINED_PAGE_IDLE_MS - Date.now());
+        if (!deadlines.length)
+            return;
+        const timer = setTimeout(() => tick(value => value + 1), Math.max(1, Math.min(...deadlines)));
+        return () => clearTimeout(timer);
+    }, [next, owner, space.activeId, open]);
+    return (0, jsx_runtime_1.jsxs)("section", { className: "xhworkspace", "aria-label": "\u5DE5\u4F5C\u533A", hidden: !open, children: [(0, jsx_runtime_1.jsxs)("div", { className: "xhworkspace-tabs", role: "tablist", "aria-label": "\u5DE5\u4F5C\u533A\u6807\u7B7E", children: [space.items.map(item => (0, jsx_runtime_1.jsxs)("div", { className: "xhworkspace-tab", "data-active": item.id === space.activeId || undefined, children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", role: "tab", "aria-selected": item.id === space.activeId, onClick: () => onSelect(item.id), title: item.title, children: [item.kind === 'tool' ? (0, jsx_runtime_1.jsx)("span", { className: "xhworkspace-kind", "aria-hidden": true, children: "\u2318" }) : item.kind === 'browser' ? ((0, jsx_runtime_1.jsx)("span", { className: "xhworkspace-kind", "aria-hidden": true, children: xhWorkspaceBrowserMark(item) })) : (0, jsx_runtime_1.jsx)("span", { className: "xhworkspace-kind", "aria-hidden": true, children: "\u25A4" }), (0, jsx_runtime_1.jsx)("span", { className: "xhworkspace-title", children: item.title })] }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "xhworkspace-tab-close", "aria-label": `关闭 ${item.title}`, onClick: () => onClose(item.id), title: "\u5173\u95ED\u6807\u7B7E", children: "\u00D7" })] }, item.id)), (0, jsx_runtime_1.jsx)("button", { type: "button", className: "xhworkspace-new", "aria-label": "\u65B0\u5EFA\u6D4F\u89C8\u5668\u6807\u7B7E", onClick: onNewBrowser, title: "\u65B0\u5EFA\u6D4F\u89C8\u5668\u6807\u7B7E", children: "+" })] }), (0, jsx_runtime_1.jsxs)("div", { className: "xhworkspace-body", children: [next.map(page => {
+                        const item = all[page.owner]?.items.find(item => item.id === page.id);
+                        if (item === undefined)
+                            return null;
+                        const visible = open && page.owner === owner && page.id === space.activeId;
+                        return (0, jsx_runtime_1.jsx)("div", { className: `xhworkspace-item xhworkspace-${item.kind}`, role: "tabpanel", hidden: !visible, "aria-hidden": !visible, style: visible ? undefined : { display: 'none' }, ...visible ? {} : { inert: '' }, "data-workspace-page-state": visible ? 'visible' : 'retained', "data-workspace-page-owner": page.owner, children: renderSlot('workspace.item', { item, sessionId: page.owner === '__global__' ? null : page.owner, open: visible,
+                                onUpdate: patch => { if (onUpdateOwner)
+                                    onUpdateOwner(page.owner, item.id, patch);
+                                else if (page.owner === owner)
+                                    onUpdate(item.id, patch); },
+                                onClose: () => { if (page.owner === owner)
+                                    onClose(item.id); }, onNewBrowser }) }, page.key);
+                    }), active?.kind === 'tool' && (0, jsx_runtime_1.jsx)("div", { className: `xhworkspace-item xhworkspace-${active.kind}`, role: "tabpanel", children: active.kind === 'tool' ? renderSlot('details', {}) : renderSlot('workspace.item', { item: active, sessionId, open, onUpdate: patch => onUpdate(active.id, patch), onClose: () => onClose(active.id), onNewBrowser }) }, (0, retained_pages_1.pageKey)(owner, active.id))] })] });
+}
+/** Actual DOM event fields produced by BrowserToggle/ToolDetails/FileView. */
+function workspaceOpenDetail(value) {
+    const raw = (0, runtime_types_1.objectValue)(value);
+    if (raw.kind !== 'browser' && raw.kind !== 'tool' && !((raw.kind === 'file' || raw.kind === 'plugin') && typeof raw.source === 'string' && raw.source.length > 0))
+        return undefined;
+    const gitDiff = file_display_options_1.GIT_DIFF_SCOPES.find(scope => scope === raw.gitDiff);
+    if (raw.gitDiff !== undefined && gitDiff === undefined)
+        return undefined;
+    const kind = raw.kind;
+    if (kind !== 'browser' && kind !== 'tool' && kind !== 'file' && kind !== 'plugin')
+        return undefined;
+    return { kind, ...gitDiff === undefined ? {} : { gitDiff }, ...typeof raw.fresh === 'boolean' ? { fresh: raw.fresh } : {}, ...typeof raw.source === 'string' ? { source: raw.source } : {}, ...typeof raw.title === 'string' ? { title: raw.title } : {}, ...typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}, ...typeof raw.url === 'string' ? { url: raw.url } : {}, ...typeof raw.relativeTo === 'string' ? { relativeTo: raw.relativeTo } : {} };
+}
+
+},
+"src/modules/layout/retained-pages.js": function(module, exports, require) {
+// source: src/modules/layout/retained-pages.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.pageKey = exports.RETAINED_PAGE_IDLE_MS = exports.RETAINED_PAGE_LIMIT = void 0;
+exports.canRetainPage = canRetainPage;
+exports.planRetainedPages = planRetainedPages;
+exports.RETAINED_PAGE_LIMIT = 4;
+exports.RETAINED_PAGE_IDLE_MS = 5 * 60000;
+const pageKey = (owner, id) => JSON.stringify([owner, id]);
+exports.pageKey = pageKey;
+/** Only existing read-only file panes and settled browser tabs opt in. Tools
+ * and provisional model rendezvous retain their original teardown contract. */
+function canRetainPage(item) {
+    return item.kind === 'plugin' || item.kind === 'file' || item.kind === 'browser' && !item.modelRequestId;
+}
+/** Presentation cache only: never invent tabs, persist content, grant browser
+ * actions, or keep a closed item alive. Evict least recently viewed pages. */
+function planRetainedPages(previous, spaces, owner, activeId, open, now) {
+    const active = open ? spaces[owner]?.items.find(item => item.id === activeId && item.kind !== 'tool') : undefined;
+    const activeKey = active === undefined ? undefined : (0, exports.pageKey)(owner, active.id);
+    const kept = previous.filter(page => {
+        const item = spaces[page.owner]?.items.find(item => item.id === page.id);
+        return item !== undefined && (item.kind === 'plugin' || page.key === activeKey || canRetainPage(item)
+            && (page.visible || now - page.usedAt < exports.RETAINED_PAGE_IDLE_MS));
+    }).map(page => {
+        const visible = page.key === activeKey;
+        return visible === page.visible ? page : { ...page, visible, usedAt: now };
+    });
+    if (active !== undefined && !kept.some(page => page.key === activeKey)) {
+        kept.push({ key: (0, exports.pageKey)(owner, active.id), owner, id: active.id, usedAt: now, visible: true });
+    }
+    const evicted = new Set([...kept].filter(page => page.key !== activeKey && spaces[page.owner]?.items.find(item => item.id === page.id)?.kind !== 'plugin')
+        .sort((a, b) => b.usedAt - a.usedAt).slice(exports.RETAINED_PAGE_LIMIT - (active === undefined ? 0 : 1)).map(page => page.key));
+    const next = kept.filter(page => !evicted.has(page.key));
+    return next.length === previous.length && next.every((page, index) => {
+        const old = previous[index];
+        return old?.key === page.key && old.usedAt === page.usedAt && old.visible === page.visible;
+    }) ? previous : next;
+}
+
+},
+"src/modules/shared/generated/file-display-options.js": function(module, exports, require) {
+// source: src/modules/shared/generated/file-display-options.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.GIT_DIFF_SCOPES = void 0;
+exports.GIT_DIFF_SCOPES = ["working", "staged", "head"];
+
+},
+"src/modules/shared/runtime-types.js": function(module, exports, require) {
+// source: src/modules/shared/runtime-types.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.isObjectRecord = isObjectRecord;
+exports.objectValue = objectValue;
+exports.errorText = errorText;
+exports.textValue = textValue;
+exports.numberValue = numberValue;
+function isObjectRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function objectValue(value) {
+    return isObjectRecord(value) ? value : {};
+}
+function errorText(error) {
+    const record = objectValue(error);
+    const rpc = objectValue(record.rpcError);
+    return typeof rpc.message === 'string' ? rpc.message : typeof record.message === 'string' ? record.message : String(error);
+}
+function textValue(value, fallback = '') {
+    return typeof value === 'string' ? value : fallback;
+}
+function numberValue(value, fallback = 0) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+},
+"src/modules/shared/workspace-dock.js": function(module, exports, require) {
+// source: src/modules/shared/workspace-dock.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.workspaceDockEvents = void 0;
+exports.workspaceDockVisibility = workspaceDockVisibility;
+/** The layout owns visibility; header controls request transitions, never infer it from tabs. */
+exports.workspaceDockEvents = {
+    toggle: 'xharness:workspace-toggle',
+    visibility: 'xharness:workspace-visibility',
+    requestVisibility: 'xharness:workspace-visibility-request',
+};
+function workspaceDockVisibility(event) {
+    if (!(event instanceof CustomEvent))
+        return undefined;
+    const detail = event.detail;
+    if (detail === null || typeof detail !== 'object' || !('open' in detail))
+        return undefined;
+    return typeof detail.open === 'boolean' ? detail.open : undefined;
+}
+
+},
+"src/modules/browser/model-control.js": function(module, exports, require) {
+// source: src/modules/browser/model-control.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.modelBrowserOpen = modelBrowserOpen;
+exports.modelBrowserClose = modelBrowserClose;
+exports.listenModelBrowser = listenModelBrowser;
+const runtime_types_1 = require("../shared/runtime-types");
+function modelBrowserOpen(raw) {
+    const value = (0, runtime_types_1.objectValue)(raw);
+    if (typeof value.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)
+        || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128 || typeof value.url !== 'string' || value.url.length > 4096)
+        return;
+    try {
+        const url = new URL(value.url);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+            return;
+        return { requestId: value.requestId, owner: value.owner, url: url.href };
+    }
+    catch {
+        return;
+    }
+}
+function modelBrowserClose(raw) {
+    const value = (0, runtime_types_1.objectValue)(raw);
+    if (typeof value.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)
+        || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128
+        || typeof value.tabId !== 'string' || !/^[A-Za-z0-9:_-]{1,64}$/.test(value.tabId))
+        return;
+    return { requestId: value.requestId, owner: value.owner, tabId: value.tabId };
+}
+/** Always mounted at AppFrame, even when settings or another center occludes
+ * the browser. Events never change the selected chat or borrow its identity. */
+function listenModelBrowser(native, ui) {
+    let disposed = false;
+    const unlisten = [];
+    const requests = new Set();
+    const recent = [];
+    const remember = (id) => { if (!recent.includes(id)) {
+        recent.push(id);
+        if (recent.length > 128)
+            recent.shift();
+    } };
+    const bind = (event, handle) => {
+        void native.event.listen(event, event => { if (!disposed)
+            handle(event.payload); }).then(stop => {
+            if (disposed)
+                stop();
+            else
+                unlisten.push(stop);
+        }).catch(() => { });
+    };
+    bind('xharness-browser-control-open', raw => {
+        const request = modelBrowserOpen(raw);
+        if (!request)
+            return;
+        if (recent.includes(request.requestId))
+            return;
+        remember(request.requestId);
+        if (ui.currentOwner() !== request.owner || !ui.ready()) {
+            void native.core.invoke('desktop_browser_control_reply', { requestId: request.requestId, reply: { status: 'failed' } }).catch(() => { });
+            return;
+        }
+        requests.add(request.requestId);
+        ui.open(request);
+    });
+    bind('xharness-browser-control-close', raw => {
+        const request = modelBrowserClose(raw);
+        if (!request || recent.includes(request.requestId))
+            return;
+        remember(request.requestId);
+        const reply = (closed) => native.core.invoke('desktop_browser_control_reply', {
+            requestId: request.requestId, reply: closed ? { status: 'closed', tab_id: request.tabId } : { status: 'failed' },
+        }).catch(() => { });
+        if (ui.currentOwner() !== request.owner || !ui.ready()) {
+            void reply(false);
+            return;
+        }
+        void ui.close(request).then(reply, () => reply(false));
+    });
+    bind('xharness-browser-control-cancel', raw => {
+        if (typeof raw !== 'string' || !/^[0-9a-f]{32}$/.test(raw))
+            return;
+        remember(raw);
+        if (!requests.delete(raw))
+            return;
+        ui.cancel(raw);
+    });
+    // Ready tabs no longer need a cancellation tombstone. Native controls ignore
+    // late replies; marking completion is local-only and contains no page data.
+    const settled = (event) => {
+        if (event instanceof CustomEvent && typeof event.detail === 'string')
+            requests.delete(event.detail);
+    };
+    window.addEventListener('xharness:browser-control-settled', settled);
+    return () => {
+        disposed = true;
+        unlisten.forEach(stop => stop());
+        window.removeEventListener('xharness:browser-control-settled', settled);
+        for (const requestId of requests) {
+            ui.cancel(requestId);
+            void native.core.invoke('desktop_browser_control_reply', { requestId, reply: { status: 'failed' } }).catch(() => { });
+        }
+        requests.clear();
+    };
+}
+
+},
+"src/modules/layout/stores.js": function(module, exports, require) {
+// source: src/modules/layout/stores.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createLayoutStore = createLayoutStore;
+/**
+ * The root entry's transient layout store: panel geometry as plain widths in
+ * px (0 = closed). Module level exports the factory only — a module-level
+ * handle would pin the store's identity in the module
+ * cache (a de-facto singleton surviving plugin reloads). register() receives
+ * the factory (exclusive use: the framework instantiates per entry), AppFrame
+ * derives its PropsStore share from the return type, and the service face
+ * receives the bound actions through the registration's inject hook.
+ */
+const client_1 = require("@xharness/dsh-client-runtime/client");
+const columns_1 = require("./columns");
+/**
+ * Create the layout panel store handle. The preference IS the width, so
+ * closing a panel forgets its drag width — reopening restores the contract
+ * default. Actions are the complete write set: drag writes clamp
+ * into the panel's contract range and never cross the open/closed line;
+ * open/close transitions write 0 / the default explicitly. Below the
+ * auto-collapse breakpoint (AppFrame feeds setNarrow) the sidebar toggle
+ * flips the narrowExpanded override instead of the preference.
+ * @returns the store handle (spec + type + identity + factory in one).
+ */
+function createLayoutStore() {
+    const handle = (0, client_1.defineStore)({
+        bake: (bind, actions) => ({
+            setSidebar: bind(actions.setSidebar), setDetails: bind(actions.setDetails),
+            toggleSidebar: bind(actions.toggleSidebar), setNarrow: bind(actions.setNarrow),
+            openDetails: bind(actions.openDetails), closeDetails: bind(actions.closeDetails),
+        }),
+        init: () => ({ sidebar: columns_1.SIDEBAR_DEFAULT, details: 0, narrow: false, narrowExpanded: false }),
+        actions: {
+            setSidebar: (d, px) => { d.sidebar = (0, columns_1.clampWidth)(px, columns_1.SIDEBAR_MIN, columns_1.SIDEBAR_MAX); },
+            setDetails: (d, px) => { d.details = (0, columns_1.clampWidth)(px, columns_1.DETAILS_MIN, columns_1.DETAILS_MAX); },
+            // Narrow toggles flip only the override: the width preference survives
+            // untouched, so re-widening restores the pre-squeeze layout.
+            toggleSidebar: (d) => {
+                if (d.narrow)
+                    d.narrowExpanded = !d.narrowExpanded;
+                else
+                    d.sidebar = d.sidebar === 0 ? columns_1.SIDEBAR_DEFAULT : 0;
+            },
+            // Crossing the breakpoint in either direction drops the override: the
+            // narrow default is auto-collapsed, the wide state is the preference.
+            setNarrow: (d, narrow) => {
+                if (d.narrow === narrow)
+                    return;
+                d.narrow = narrow;
+                d.narrowExpanded = false;
+            },
+            openDetails: (d) => { if (d.details === 0)
+                d.details = columns_1.DETAILS_DEFAULT; },
+            closeDetails: (d) => { d.details = 0; },
+        },
+    });
+    return handle;
+}
+
+},
+"src/modules/layout/service.js": function(module, exports, require) {
+// source: src/modules/layout/service.ts
+
+"use strict";
+var __classPrivateFieldSet = (this && this.__classPrivateFieldSet) || function (receiver, state, value, kind, f) {
+    if (kind === "m") throw new TypeError("Private method is not writable");
+    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+    return (kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value)), value;
+};
+var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (receiver, state, kind, f) {
+    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+    return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
+};
+var _LayoutController_instances, _LayoutController_panels, _LayoutController_require;
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.LayoutController = void 0;
+/** Cross-plugin panel-action face (ctx.layout). */
+class LayoutController {
+    constructor() {
+        _LayoutController_instances.add(this);
+        _LayoutController_panels.set(this, void 0);
+    }
+    /**
+     * Adopt the root entry's bound store actions. Called from the root
+     * registration's inject hook (a sanctioned assembly side effect), so the
+     * face is live from the entry's first render; on entry re-register the
+     * fresh actions overwrite the stale set.
+     * @param actions - bound actions of the entry's layout store instance.
+     */
+    attachPanels(actions) {
+        __classPrivateFieldSet(this, _LayoutController_panels, actions, "f");
+    }
+    /** Toggle the sidebar panel (closed ⟷ contract default width). */
+    toggleSidebar() {
+        __classPrivateFieldGet(this, _LayoutController_instances, "m", _LayoutController_require).call(this).toggleSidebar();
+    }
+    /** Open the details panel (no-op when already open). */
+    openDetails() {
+        __classPrivateFieldGet(this, _LayoutController_instances, "m", _LayoutController_require).call(this).openDetails();
+        window.dispatchEvent(new CustomEvent('xharness:workspace-open', { detail: { kind: 'tool' } }));
+    }
+    /** Close the details panel. */
+    closeDetails() {
+        __classPrivateFieldGet(this, _LayoutController_instances, "m", _LayoutController_require).call(this).closeDetails();
+        window.dispatchEvent(new Event('xharness:workspace-close-tool'));
+    }
+}
+exports.LayoutController = LayoutController;
+_LayoutController_panels = new WeakMap(), _LayoutController_instances = new WeakSet(), _LayoutController_require = function _LayoutController_require() {
+    // Callers are UI gestures, which cannot fire before the root entry
+    // rendered (the inject hook runs in its first render) — reaching this
+    // unwired is a boot-order bug, not a race to tolerate.
+    if (__classPrivateFieldGet(this, _LayoutController_panels, "f") === undefined)
+        throw new Error('layout: panel actions not wired (root entry not mounted)');
+    return __classPrivateFieldGet(this, _LayoutController_panels, "f");
+};
+
+},
+"src/modules/layout/theme-presenter.js": function(module, exports, require) {
+// source: src/modules/layout/theme-presenter.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ThemePresenter = exports.DARK_ATTRIBUTE = void 0;
+/** Body attribute selecting the dark base palette in the token stylesheets. */
+exports.DARK_ATTRIBUTE = 'data-ds-dark-theme';
+/** Applies theme snapshots to the document; one instance per plugin fiber. */
+class ThemePresenter {
+    /** Create the presenter-owned metadata node before the first snapshot arrives. */
+    constructor() {
+        /** Token names this presenter wrote in the last apply (its retraction set). */
+        this.appliedTokens = [];
+        this.themeColorMeta = document.createElement('meta');
+        this.themeColorMeta.name = 'theme-color';
+    }
+    /**
+     * Project a snapshot onto the document: set root `color-scheme` and the body
+     * palette attribute from `active.colorScheme` (never the id — `system` is
+     * resolved upstream), then replace the previously applied token variables
+     * with `active.tokens`. Browser theme-color metadata follows the computed
+     * body background after those writes, so the rendered palette remains the
+     * color authority.
+     * @param snapshot - resolved theme snapshot from ctx.theme.
+     */
+    apply(snapshot) {
+        const scheme = snapshot.active.colorScheme;
+        document.documentElement.style.colorScheme = scheme;
+        // Native chrome needs the preference as well as the resolved scheme:
+        // System must release its override instead of feeding back into OS sensing.
+        document.documentElement.dataset.xhThemePreference = snapshot.preference;
+        const body = document.body;
+        if (scheme === 'dark')
+            body.setAttribute(exports.DARK_ATTRIBUTE, '');
+        else
+            body.removeAttribute(exports.DARK_ATTRIBUTE);
+        for (const name of this.appliedTokens)
+            body.style.removeProperty(name);
+        this.appliedTokens = [];
+        for (const [name, value] of Object.entries(snapshot.active.tokens)) {
+            body.style.setProperty(name, value);
+            this.appliedTokens.push(name);
+        }
+        this.themeColorMeta.content = getComputedStyle(body).backgroundColor;
+        if (!this.themeColorMeta.isConnected)
+            document.head.append(this.themeColorMeta);
+    }
+    /** Retract root color-scheme, the palette attribute, token variables, and the owned metadata node. */
+    dispose() {
+        document.documentElement.style.removeProperty('color-scheme');
+        delete document.documentElement.dataset.xhThemePreference;
+        const body = document.body;
+        body.removeAttribute(exports.DARK_ATTRIBUTE);
+        for (const name of this.appliedTokens)
+            body.style.removeProperty(name);
+        this.appliedTokens = [];
+        this.themeColorMeta.remove();
+    }
+}
+exports.ThemePresenter = ThemePresenter;
+
+},
+"src/modules/layout/shell-navigation.js": function(module, exports, require) {
+// source: src/modules/layout/shell-navigation.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ShellNavigation = exports.SHELL_HISTORY_LIMIT = void 0;
+const shell_route_1 = require("../shared/shell-route");
+const pages = ['plugins', 'work', 'assistant', 'swarm'];
+const sameRoute = (a, b) => a.page === b.page && a.sessionId === b.sessionId;
+exports.SHELL_HISTORY_LIMIT = 128;
+/** One history owner for session selection and center-page transitions. History
+ * is window-local and bounded; deleted routes are skipped, never recreated. */
+class ShellNavigation {
+    constructor(sessions) {
+        this.sessions = sessions;
+        this.entries = [];
+        this.position = -1;
+        this.snapshot = {
+            route: { page: 'chat', sessionId: undefined }, canBack: false, canForward: false,
+        };
+        this.listeners = new Set();
+        this.replaying = false;
+        this.scheduled = false;
+        this.generation = 0;
+        this.initialized = false;
+        this.getSnapshot = () => this.snapshot;
+        this.subscribe = (listener) => {
+            this.listeners.add(listener);
+            return () => { this.listeners.delete(listener); };
+        };
+        this.back = () => { this.travel(-1); };
+        this.forward = () => { this.travel(1); };
+        this.close = () => { this.openPage('chat'); };
+        this.schedule = () => {
+            if (this.replaying || this.scheduled || !this.target)
+                return;
+            this.scheduled = true;
+            const generation = this.generation;
+            queueMicrotask(() => {
+                if (generation !== this.generation)
+                    return;
+                this.scheduled = false;
+                this.flush();
+            });
+        };
+    }
+    /** Owned by AppFrame's effect, with symmetric cleanup (also StrictMode safe). */
+    mount(target) {
+        if (this.target)
+            throw new Error('shell navigation: already mounted');
+        this.target = target;
+        const bindings = pages.map(page => {
+            const listener = () => { this.openPage(page); };
+            target.addEventListener(`xharness:${page}:open`, listener);
+            return () => target.removeEventListener(`xharness:${page}:open`, listener);
+        });
+        // Stale pre-retirement clients may still dispatch this event. Return to the
+        // existing chat; never select/create a session or leave an empty center.
+        target.addEventListener('xharness:review:open', this.close);
+        const project = () => { this.present(this.snapshot.route.page); };
+        target.addEventListener(shell_route_1.SHELL_ROUTE_REQUESTED, project);
+        target.addEventListener('xharness:assistant:close', this.close);
+        target.addEventListener('xharness:swarm:close', this.close);
+        const off = this.sessions.list.subscribe(this.schedule);
+        this.flush();
+        this.present(this.snapshot.route.page);
+        return () => {
+            off();
+            for (const remove of bindings)
+                remove();
+            target.removeEventListener('xharness:review:open', this.close);
+            target.removeEventListener(shell_route_1.SHELL_ROUTE_REQUESTED, project);
+            target.removeEventListener('xharness:assistant:close', this.close);
+            target.removeEventListener('xharness:swarm:close', this.close);
+            this.target = undefined;
+            this.generation++;
+            this.scheduled = false;
+            this.pendingPage = undefined;
+        };
+    }
+    flush() {
+        const state = this.sessions.list.getSnapshot();
+        // Center pages are local UI. An unavailable Host must not block them.
+        // Unknown initial selection is distinct from an intentional empty chat;
+        // bind only unknown visits once the first authoritative catalog arrives.
+        if (this.position < 0) {
+            this.selected = state.current;
+            this.entries = [{ page: 'chat', sessionId: state.current,
+                    ...(state.phase === 'pending' && state.current === undefined ? { selectionPending: true } : {}) }];
+            this.position = 0;
+        }
+        const masked = state.current === undefined && this.selected !== undefined && state.byId[this.selected] === undefined;
+        const sessionId = masked ? this.selected : state.current;
+        if (state.phase === 'ready' && !this.initialized) {
+            this.initialized = true;
+            this.entries = this.entries.map(route => route.selectionPending
+                ? { page: route.page, sessionId } : route);
+        }
+        const page = this.pendingPage ?? this.snapshot.route.page;
+        this.pendingPage = undefined;
+        this.selected = sessionId;
+        // Coalesce a feature's open event and its same-gesture session selection.
+        // Returning to a page never replays that feature's open operation.
+        this.visit({ page, sessionId,
+            ...(!this.initialized && sessionId === undefined ? { selectionPending: true } : {}) });
+        this.publish();
+    }
+    openPage(page) {
+        if (!this.target)
+            return;
+        this.pendingPage = page;
+        this.schedule();
+    }
+    visit(route) {
+        const previous = this.entries[this.position];
+        if (previous && sameRoute(previous, route))
+            return;
+        this.entries = this.entries.slice(0, this.position + 1);
+        this.entries.push(route);
+        if (this.entries.length > exports.SHELL_HISTORY_LIMIT)
+            this.entries.shift();
+        this.position = this.entries.length - 1;
+        this.publish();
+        this.present(route.page);
+    }
+    available(route) {
+        const state = this.sessions.list.getSnapshot();
+        if (state.phase !== 'ready')
+            return !!route.selectionPending || route.sessionId === this.selected;
+        if (route.sessionId === undefined)
+            return true;
+        if (state.ids.includes(route.sessionId))
+            return true;
+        // Catalog children are deliberately absent from ids after leaving them.
+        // Retained addresses are enough while their catalog is not yet loaded;
+        // a loaded catalog tombstone is authoritative and must not be reopened.
+        const address = this.sessions.subagentAddress(route.sessionId);
+        if (typeof address !== 'object' || address === null || !('parentSessionId' in address)
+            || typeof address.parentSessionId !== 'string')
+            return false;
+        const catalog = state.subagentsByParent?.[address.parentSessionId];
+        return catalog === undefined || catalog.entries.some(entry => entry.id === route.sessionId && entry.kind === 'child');
+    }
+    find(direction) {
+        const current = this.entries[this.position];
+        for (let i = this.position + direction; i >= 0 && i < this.entries.length; i += direction) {
+            const route = this.entries[i];
+            if (route && (!current || !sameRoute(route, current)) && this.available(route))
+                return i;
+        }
+        return -1;
+    }
+    travel(direction) {
+        if (!this.target)
+            return;
+        this.flush();
+        const next = this.find(direction);
+        if (next === -1)
+            return;
+        const route = this.entries[next];
+        if (route === undefined)
+            return;
+        this.replaying = true;
+        try {
+            const ready = this.sessions.list.getSnapshot().phase === 'ready';
+            if (ready && route.sessionId !== this.sessions.list.getSnapshot().current) {
+                if (route.sessionId === undefined)
+                    this.sessions.clear();
+                else
+                    this.sessions.open(route.sessionId);
+            }
+            // Selection is synchronous; never advance a cursor on an unaccepted
+            // route. Transcript loading continues through the existing runtime.
+            if (ready && this.sessions.list.getSnapshot().current !== route.sessionId)
+                return;
+            this.selected = route.sessionId;
+            this.position = next;
+            this.publish();
+            this.present(route.page);
+        }
+        finally {
+            this.replaying = false;
+        }
+    }
+    publish() {
+        const entry = this.entries[this.position] ?? this.snapshot.route;
+        const route = { page: entry.page, sessionId: entry.sessionId };
+        const canBack = this.find(-1) !== -1, canForward = this.find(1) !== -1;
+        if (sameRoute(route, this.snapshot.route) && canBack === this.snapshot.canBack && canForward === this.snapshot.canForward)
+            return;
+        this.snapshot = { route, canBack, canForward };
+        for (const listener of [...this.listeners])
+            listener();
+    }
+    present(page) {
+        // Presentation projection is intentionally not an ':open' intent event:
+        // Assistant's handler selects a session and may stage references.
+        this.target?.dispatchEvent(new CustomEvent(shell_route_1.SHELL_ROUTE_CHANGED, { detail: { page } }));
+    }
+}
+exports.ShellNavigation = ShellNavigation;
+
+},
+"src/modules/shared/shell-route.js": function(module, exports, require) {
+// source: src/modules/shared/shell-route.ts
+
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SHELL_ROUTE_REQUESTED = exports.SHELL_ROUTE_CHANGED = void 0;
+exports.observeShellPage = observeShellPage;
+/** A display projection, never an instruction to re-run a page's action. */
+exports.SHELL_ROUTE_CHANGED = 'xharness:shell-route-changed';
+exports.SHELL_ROUTE_REQUESTED = 'xharness:shell-route-requested';
+function observeShellPage(page, setActive) {
+    const changed = (event) => {
+        if (!(event instanceof CustomEvent))
+            return;
+        const detail = event.detail;
+        if (typeof detail === 'object' && detail !== null && 'page' in detail && typeof detail.page === 'string') {
+            setActive(detail.page === page);
+        }
+    };
+    window.addEventListener(exports.SHELL_ROUTE_CHANGED, changed);
+    // A compact/wide sidebar remount must hydrate its active marker without
+    // replaying a feature's ':open' operation or waiting for another visit.
+    window.dispatchEvent(new Event(exports.SHELL_ROUTE_REQUESTED));
+    return () => window.removeEventListener(exports.SHELL_ROUTE_CHANGED, changed);
+}
+
+}
+};
+const __dependencies = {"src/modules/layout/index.js":{"./AppFrame":"src/modules/layout/AppFrame.js","./stores":"src/modules/layout/stores.js","./service":"src/modules/layout/service.js","./theme-presenter":"src/modules/layout/theme-presenter.js","./shell-navigation":"src/modules/layout/shell-navigation.js"},"src/modules/layout/AppFrame.js":{"./columns":"src/modules/layout/columns.js","./AppFrame.styles":"src/modules/layout/AppFrame.styles.js","./WorkCenter":"src/modules/layout/WorkCenter.js","./browser-window-controller":"src/modules/layout/browser-window-controller.js","./workspace-pane":"src/modules/layout/workspace-pane.js","../shared/workspace-dock":"src/modules/shared/workspace-dock.js","../browser/model-control":"src/modules/browser/model-control.js","../shared/runtime-types":"src/modules/shared/runtime-types.js"},"src/modules/layout/columns.js":{},"src/modules/layout/AppFrame.styles.js":{"./AppFrame.css":"src/modules/layout/AppFrame.css","../views-types":"src/modules/views-types.js"},"src/modules/layout/AppFrame.css":{},"src/modules/views-types.js":{},"src/modules/layout/WorkCenter.js":{"./WorkCenter.css":"src/modules/layout/WorkCenter.css","../views-types":"src/modules/views-types.js"},"src/modules/layout/WorkCenter.css":{},"src/modules/layout/browser-window-controller.js":{},"src/modules/layout/workspace-pane.js":{"./retained-pages":"src/modules/layout/retained-pages.js","../shared/generated/file-display-options":"src/modules/shared/generated/file-display-options.js","../shared/runtime-types":"src/modules/shared/runtime-types.js"},"src/modules/layout/retained-pages.js":{},"src/modules/shared/generated/file-display-options.js":{},"src/modules/shared/runtime-types.js":{},"src/modules/shared/workspace-dock.js":{},"src/modules/browser/model-control.js":{"../shared/runtime-types":"src/modules/shared/runtime-types.js"},"src/modules/layout/stores.js":{"./columns":"src/modules/layout/columns.js"},"src/modules/layout/service.js":{},"src/modules/layout/theme-presenter.js":{},"src/modules/layout/shell-navigation.js":{"../shared/shell-route":"src/modules/shared/shell-route.js"},"src/modules/shared/shell-route.js":{}};
+const __cache = Object.create(null);
+const __load = id => {
+  if (__cache[id]) return __cache[id].exports;
+  const unit = __units[id];
+  if (!unit) throw Error('Unknown local UI module: ' + id);
+  const module = { exports: {} };
+  __cache[id] = module;
+  try {
+    unit(module, module.exports, request => Object.prototype.hasOwnProperty.call(__dependencies[id], request)
+      ? __load(__dependencies[id][request]) : __externalRequire(request));
+  } catch (error) { delete __cache[id]; throw error; }
+  return module.exports;
+};
+return __load("src/modules/layout/index.js");
+}
+});
