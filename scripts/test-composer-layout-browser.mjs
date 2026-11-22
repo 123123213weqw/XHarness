@@ -108,7 +108,7 @@ try {
     }
     for(const control of layout.buttons) assert.ok(Math.abs(control.y+control.height/2-(layout.actions.y+layout.actions.height/2))<=1,JSON.stringify(layout))
     // Persistent stats strip + inline model label add rows below the input.
-  assert.ok(layout.toolbar.height<=96,JSON.stringify(layout))
+  assert.ok(layout.toolbar.height<=124,JSON.stringify(layout))
     if([1280,375].includes(width)) {
       await page.screenshot({path:resolve(output,`${engine}-${dark?'dark':'light'}-${width}.png`)})
       await page.locator('[data-composer-card]').screenshot({path:resolve(output,`${engine}-${dark?'dark':'light'}-${width}-card.png`),animations:'disabled'})
