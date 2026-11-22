@@ -35,6 +35,10 @@ pub enum McpError {
     Unavailable(String),
     #[error("MCP operation timed out")]
     Timeout,
+    #[error("MCP call cancelled before dispatch")]
+    CancelledBeforeDispatch,
+    #[error("MCP call cancelled after dispatch; outcome may be unknown, inspect before retrying")]
+    CancelledAfterDispatch,
     #[error("MCP tool result exceeds its text or image byte budget")]
     ResultTooLarge,
 }
@@ -397,8 +401,53 @@ impl McpRuntime {
         arguments: Map<String, Value>,
         lease: &CancellationToken,
     ) -> Result<Value, McpError> {
-        let connection = self.ensure_connected(owner, config, lease).await?;
-        let _operation = connection.operations.lock().await;
+        self.call_tool_inner(owner, config, name, arguments, lease, None)
+            .await
+    }
+
+    /// Cancels only the disposable server connection that dispatched this
+    /// request. A stop while queued must not close an earlier request's browser.
+    pub async fn call_disposable_tool_with_lease(
+        &self,
+        owner: &str,
+        config: &StdioServerConfig,
+        name: &str,
+        arguments: Map<String, Value>,
+        lease: &CancellationToken,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, McpError> {
+        self.call_tool_inner(owner, config, name, arguments, lease, Some(cancellation))
+            .await
+    }
+
+    async fn call_tool_inner(
+        &self,
+        owner: &str,
+        config: &StdioServerConfig,
+        name: &str,
+        arguments: Map<String, Value>,
+        lease: &CancellationToken,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<Value, McpError> {
+        let caller_cancelled = || async {
+            if let Some(token) = cancellation {
+                token.cancelled().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let connection = tokio::select! {
+            biased;
+            _ = caller_cancelled() => return Err(McpError::CancelledBeforeDispatch),
+            result = self.ensure_connected(owner, config, lease) => result?,
+        };
+        let _operation = tokio::select! {
+            biased;
+            _ = caller_cancelled() => return Err(McpError::CancelledBeforeDispatch),
+            _ = connection.cancelled.cancelled() => return Err(McpError::Unavailable("MCP connection revoked".into())),
+            _ = lease.cancelled() => return Err(McpError::Unavailable("MCP plugin was disabled".into())),
+            guard = connection.operations.lock() => guard,
+        };
         if connection.panels.load(std::sync::atomic::Ordering::Acquire) > 0
             && (!connection
                 .interactive
@@ -421,7 +470,14 @@ impl McpRuntime {
         }
         connection.touch();
         let client = connection.client.read().await;
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(McpError::CancelledBeforeDispatch);
+        }
         let result = tokio::select! {
+            biased;
+            _ = connection.cancelled.cancelled() => Err(McpError::Unavailable("MCP connection revoked".into())),
+            _ = lease.cancelled() => Err(McpError::Unavailable("MCP plugin was disabled".into())),
+            _ = caller_cancelled() => Err(McpError::CancelledAfterDispatch),
             result = timeout(self.call_timeout, client.call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))) => {
                 match result {
                     Ok(Ok(value)) => Ok(value),
@@ -429,12 +485,11 @@ impl McpRuntime {
                     Err(_) => Err(McpError::Timeout),
                 }
             }
-            _ = connection.cancelled.cancelled() => Err(McpError::Unavailable("MCP connection revoked".into())),
-            _ = lease.cancelled() => Err(McpError::Unavailable("MCP plugin was disabled".into())),
         };
         drop(client);
-        if matches!(&result, Err(McpError::Timeout))
-            && connection.panels.load(std::sync::atomic::Ordering::Acquire) == 0
+        if matches!(&result, Err(McpError::CancelledAfterDispatch))
+            || (matches!(&result, Err(McpError::Timeout))
+                && connection.panels.load(std::sync::atomic::Ordering::Acquire) == 0)
         {
             connection.cancelled.cancel();
             self.disconnect_connection(owner, config, &connection).await;

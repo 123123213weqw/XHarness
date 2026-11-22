@@ -141,8 +141,27 @@ export class BrowserUseEngine {
     }
     await mkdir(resolve(options.artifactRoot), { recursive: true, mode: 0o700 });
     const root = await realpath(resolve(options.artifactRoot));
-    const browser = await chromium.launch({ headless: options.headless ?? true, ...(options.proxy ? { proxy: { server: options.proxy, bypass: "127.0.0.1,localhost" } } : {}) });
+    const browser = await chromium.launch({
+      headless: options.headless ?? true,
+      // A container launch must not retry without Chromium's own sandbox.
+      ...(options.containerSandbox ? { channel: "chromium", chromiumSandbox: true, timeout: 15000 } : {}),
+      ...(options.proxy ? { proxy: { server: options.proxy, bypass: "127.0.0.1,localhost" } } : {}),
+    });
     try {
+      if (options.containerSandbox) {
+        // This internal probe runs before any website is opened. The pinned
+        // browser version promises this diagnostic; a partial sandbox is not
+        // sufficient and cannot fall back to an unsandboxed browser.
+        const page = await browser.newPage({ acceptDownloads: false });
+        try {
+          await page.goto("chrome://sandbox/", { timeout: 3000 });
+          const status = await page.locator("body").innerText({ timeout: 3000 });
+          if (!/PID namespaces\s+Yes/i.test(status) || !/Network namespaces\s+Yes/i.test(status)
+            || !/Seccomp-BPF sandbox\s+Yes/i.test(status) || !/You are adequately sandboxed\./i.test(status)) {
+            throw Error("Required Chromium sandbox layers are unavailable");
+          }
+        } finally { await page.close(); }
+      }
       const context = await browser.newContext({ viewport: options.viewport ?? { width: 1280, height: 800 }, deviceScaleFactor: 1, acceptDownloads: true, serviceWorkers: "block" });
       context.setDefaultTimeout(Math.min(Math.max(options.timeoutMs ?? 6000, 100), 30000));
       context.setDefaultNavigationTimeout(15000);

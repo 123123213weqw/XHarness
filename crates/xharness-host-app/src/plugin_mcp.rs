@@ -427,6 +427,15 @@ fn scoped_spec(
                         return media::project(result,media.as_deref(),&context.cancellation).await;
                     }
                 }
+                if plugin == browser_boundary::HEADLESS_PLUGIN
+                    && server == browser_boundary::HEADLESS_SERVER
+                    && config.env.contains_key(browser_boundary::CONTAINER_CONFIG)
+                {
+                    let result = runtime.call_disposable_tool_with_lease(
+                        &owner, &config, tool, parameters, &lease, &context.cancellation,
+                    ).await.map_err(error)?;
+                    return media::project(result, media.as_deref(), &context.cancellation).await;
+                }
                 let call = runtime.call_tool_with_lease(&owner, &config, tool, parameters, &lease);
                 tokio::select! {
                     result = call => media::project(result.map_err(error)?, media.as_deref(), &context.cancellation).await,

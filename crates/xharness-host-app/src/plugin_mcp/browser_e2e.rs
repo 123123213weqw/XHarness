@@ -2,6 +2,8 @@
 //! the scripted provider only inspects requests and is not a model-quality test.
 #![forbid(unsafe_code)]
 
+mod container;
+
 use std::{
     io::{Cursor, Write},
     path::PathBuf,
@@ -31,6 +33,7 @@ impl Drop for Root {
 }
 struct ScriptedProvider {
     url: String,
+    plugin: &'static str,
     requests: Mutex<Vec<ProviderRequest>>,
 }
 #[async_trait]
@@ -52,7 +55,7 @@ impl ModelProvider for ScriptedProvider {
         };
         let events = if let Some(arguments) = arguments {
             vec![Ok(ProviderEvent::ToolCallDelta { index: 0, id: format!("browser-call-{step}"), name: "plugin_mcp".into(),
-                arguments_delta: json!({"action":"call","plugin":"browser-chain-fixture","server":"browser","tool":"browser","arguments":arguments}).to_string() }),
+                arguments_delta: json!({"action":"call","plugin":self.plugin,"server":"browser","tool":"browser","arguments":arguments}).to_string() }),
                 Ok(ProviderEvent::Completed { finish_reason: Some(FinishReason::ToolCalls), usage: None, provider_items: Vec::new() })]
         } else {
             vec![
@@ -132,22 +135,33 @@ async fn install(root: &Root, url: &str, launcher: PathBuf) -> Arc<PluginManager
             .unwrap();
         zip.write_all(bytes.as_bytes()).unwrap();
     }
-    let bytes = zip.finish().unwrap().into_inner();
+    install_archive(
+        root,
+        "browser-chain-fixture",
+        "1.0.0",
+        &zip.finish().unwrap().into_inner(),
+    )
+    .await
+}
+
+async fn install_archive(
+    root: &Root,
+    plugin: &str,
+    version: &str,
+    bytes: &[u8],
+) -> Arc<PluginManager> {
     let manager = Arc::new(PluginManager::open(root.0.join("plugins")).unwrap());
-    manager.import_catalog(&json!({"plugins":[{"name":"browser-chain-fixture","version":"1.0.0","source":{
-        "source":"url","type":"zip","url":"https://example.invalid/browser-chain.zip","sha256":format!("{:x}", Sha256::digest(&bytes))
+    manager.import_catalog(&json!({"plugins":[{"name":plugin,"version":version,"source":{
+        "source":"url","type":"zip","url":"https://example.invalid/browser-chain.zip","sha256":format!("{:x}", Sha256::digest(bytes))
     }}]}).to_string()).await.unwrap();
     let installed = manager
-        .install_verified_archive("browser-chain-fixture", &bytes)
+        .install_verified_archive(plugin, bytes)
         .await
         .unwrap();
     assert!(!installed.enabled && !installed.mcp_enabled);
     // This is an MCP-only package. Skill enablement is a separate capability
     // and must not be invented just to make a transport acceptance pass.
-    let enabled = manager
-        .set_mcp_enabled("browser-chain-fixture", true)
-        .await
-        .unwrap();
+    let enabled = manager.set_mcp_enabled(plugin, true).await.unwrap();
     assert!(!enabled.enabled && enabled.mcp_enabled);
     manager
 }
@@ -190,6 +204,7 @@ async fn real_browser_mcp_image_reaches_provider_request_and_durable_history() {
     let mcp = McpRuntime::new();
     let provider = Arc::new(ScriptedProvider {
         url: format!("{origin}/"),
+        plugin: "browser-chain-fixture",
         requests: Mutex::new(Vec::new()),
     });
     let tools = Arc::new(BrowserTools {
