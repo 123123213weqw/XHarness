@@ -17,4 +17,4 @@
 /* Reuse the product orbital glyph instead of introducing a new model logo. */
 .AbPDjW_modelIcon{display:inline-flex;flex:none;align-items:center;justify-content:center}
 .AbPDjW_modelIcon svg{width:18px;height:18px}
-.AbPDjW_compact .AbPDjW_modelIcon svg{width:20px;height:20px}
+.AbPDjW_compact .AbPDjW_modelIcon svg{width:20px;height:20px}@container (max-width:300px){.AbPDjW_compact>.AbPDjW_trigger{width:32px;min-width:32px;height:32px;padding:0}.AbPDjW_compact>.AbPDjW_trigger .AbPDjW_triggerLabel{display:none}.AbPDjW_compact>.AbPDjW_trigger>.AbPDjW_chevron{display:none}.AbPDjW_compact .AbPDjW_modelIcon{display:inline-flex}}
