@@ -394,6 +394,15 @@ impl BasicHost {
         &self,
         session_id: &str,
     ) -> Result<bool, RpcError> {
+        self.sync_authoritative_session_hiding_queue_item(session_id, None)
+            .await
+    }
+
+    async fn sync_authoritative_session_hiding_queue_item(
+        &self,
+        session_id: &str,
+        launching_input: Option<&str>,
+    ) -> Result<bool, RpcError> {
         if !self.agent_runtime.has_authoritative_sessions() {
             return Ok(false);
         }
@@ -599,7 +608,8 @@ impl BasicHost {
                 }
             }
             if queue_changed {
-                self.emit_queue(session_id).await;
+                self.emit_queue_hiding_item(session_id, launching_input)
+                    .await;
             }
             if schedules_changed {
                 self.push_projection(
@@ -795,13 +805,22 @@ impl BasicHost {
     }
 
     pub(crate) async fn emit_queue(&self, session_id: &str) {
-        let items = self
+        self.emit_queue_hiding_item(session_id, None).await;
+    }
+
+    // Keep the durable inbox and admission/projection bookkeeping unchanged.
+    // Only omit the input that this driver is immediately trying to start.
+    async fn emit_queue_hiding_item(&self, session_id: &str, launching_input: Option<&str>) {
+        let mut items = self
             .state
             .read()
             .await
             .sessions
             .get(session_id)
             .map_or_else(Vec::new, |session| session.queue_view());
+        if let Some(input_id) = launching_input {
+            items.retain(|item| item["id"].as_str() != Some(input_id));
+        }
         self.push_mux(EventGateway::queue(session_id, items));
     }
 
@@ -1014,6 +1033,7 @@ impl BasicHost {
         }
 
         let mut start_driver = None;
+        let mut launching_input = None;
         {
             let mut state = self.state.write().await;
             let session = state.sessions.get_mut(session_id).ok_or_else(|| {
@@ -1036,6 +1056,9 @@ impl BasicHost {
                 crate::admission_cache::AdmissionReceipt { fingerprint },
             );
             if !session.running && !session.dispatch_paused {
+                if session.queue.len() == 1 && session.projected_queue.is_empty() {
+                    launching_input = Some(rpc_id.as_str());
+                }
                 let (control_tx, control_rx) = mpsc::channel(64);
                 session.running = true;
                 session.control = Some(control_tx);
@@ -1045,13 +1068,12 @@ impl BasicHost {
                 start_driver = Some(control_rx);
             }
         }
-        // An idle session that just spun up its driver consumes this prompt
-        // immediately; emitting the queue view only flashes a queued row in
-        // the UI before the authoritative user message lands (visible on
-        // large journals where driver startup widens the gap). Queued rows
-        // are meaningful only while a turn is already running.
-        if start_driver.is_none() && !self.sync_authoritative_session(session_id).await? {
-            self.emit_queue(session_id).await;
+        if !self
+            .sync_authoritative_session_hiding_queue_item(session_id, launching_input)
+            .await?
+        {
+            self.emit_queue_hiding_item(session_id, launching_input)
+                .await;
         }
         if let Some(control_rx) = start_driver {
             self.push_host(json!({
@@ -1193,6 +1215,7 @@ impl BasicHost {
                     record.driver_epoch = None;
                 }
                 drop(state);
+                self.emit_queue(&session_id).await;
                 self.push_permission_projection(&session_id).await;
                 self.push_host(
                     json!({"type":"host/session-status","sessionId":session_id,"running":false}),
@@ -1234,12 +1257,15 @@ impl BasicHost {
                 }));
                 return;
             };
-            self.emit_queue(&session_id).await;
+            self.emit_queue_hiding_item(&session_id, Some(&prompt.id))
+                .await;
             let work_id = prompt.id.clone();
             if let Err(error) = self
                 .run_turn(&session_id, prompt, &mut control_rx, admission_guard)
                 .await
             {
+                // A failed launch can leave durable input pending. Do not hide it.
+                self.emit_queue(&session_id).await;
                 if let Err(persist_error) = self
                     .record_delegation_failure(&session_id, &work_id, &error.message)
                     .await
@@ -1353,7 +1379,9 @@ impl BasicHost {
         control_rx: &mut mpsc::Receiver<DriverCommand>,
         admission_guard: OwnedMutexGuard<()>,
     ) -> Result<(), RpcError> {
-        let authoritative = self.sync_authoritative_session(session_id).await?;
+        let authoritative = self
+            .sync_authoritative_session_hiding_queue_item(session_id, Some(&prompt.id))
+            .await?;
         let (permission, assembled_prompt) = if authoritative {
             // The durable driver may already own a started/queued turn. Only
             // its factory may publish the active snapshot, never this observer.
