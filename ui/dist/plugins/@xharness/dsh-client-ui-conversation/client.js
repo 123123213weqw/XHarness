@@ -201,6 +201,7 @@ function apply(ctx) {
             'conversation.input.overlay': { kind: 'list', scope: 'session' },
             'conversation.input.dock': { kind: 'list', scope: 'session' },
             'conversation.composer.dock': { kind: 'list', scope: 'session' },
+            'conversation.composer.status': { kind: 'list', scope: 'session' },
             'conversation.input.left': { kind: 'list', scope: 'session' },
             'conversation.input.right': { kind: 'list', scope: 'session' },
             'conversation.hero.brand.mark': { kind: 'single', scope: 'root' },
@@ -431,7 +432,7 @@ function apply(ctx) {
         },
     }, ChatView_1.ChatView);
     // Session stats stick with the composer (composer.dock = stats-line family).
-    slots.register({ name: 'conversation.composer.dock', id: 'stats', order: 0, locale: locales_1.NS }, StatsLine_1.StatsLine);
+    slots.register({ name: 'conversation.composer.status', id: 'stats', order: 0, locale: locales_1.NS }, StatsLine_1.StatsLine);
     // Class-plugin mount (packages/AGENTS.md service form): the service
     // registers itself as `conversation` and lives on its own child fiber.
     // Presentation registrants depend directly on their slot declarations;
@@ -1814,7 +1815,7 @@ if (typeof document !== 'undefined' && document.querySelector('style[data-plugin
 // source: src/modules/conversation/chat/StatsLine.css
 
 Object.defineProperty(exports, '__esModule', { value: true });
-exports.default = ".PvwIvW_root{position:static;flex:0 1 auto;min-width:0;max-width:100%;box-sizing:border-box;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}\n.PvwIvW_summary{display:flex;align-items:center;justify-content:center;width:32px;height:32px;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;border-radius:50%}\n.PvwIvW_summary svg{width:18px;height:18px}\n.PvwIvW_summary:hover,.PvwIvW_root[data-expanded]>.PvwIvW_summary{background:var(--dsw-alias-interactive-bg-hover)}\n.PvwIvW_summary:focus-visible{outline:2px solid var(--dsw-alias-border-l3);outline-offset:2px}\n.PvwIvW_details{position:absolute;z-index:100;bottom:calc(100% + 10px);left:0;box-sizing:border-box;width:max-content;min-width:min(220px,100%);max-width:min(340px,100%);max-height:min(300px,60vh);overflow:auto;display:grid;gap:6px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);overflow-wrap:anywhere}.PvwIvW_strip{display:flex;flex-wrap:nowrap;column-gap:14px;padding:2px 4px 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden}.PvwIvW_stripItem{white-space:nowrap}\n";
+exports.default = ".PvwIvW_root{position:static;width:100%;min-width:0;box-sizing:border-box;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}\n.PvwIvW_summary{display:flex;align-items:center;justify-content:center;width:32px;height:32px;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;border-radius:50%}\n.PvwIvW_summary svg{width:18px;height:18px}\n.PvwIvW_summary:hover,.PvwIvW_root[data-expanded]>.PvwIvW_summary{background:var(--dsw-alias-interactive-bg-hover)}\n.PvwIvW_summary:focus-visible{outline:2px solid var(--dsw-alias-border-l3);outline-offset:2px}\n.PvwIvW_details{position:absolute;z-index:100;bottom:calc(100% + 10px);left:0;box-sizing:border-box;width:max-content;min-width:min(220px,100%);max-width:min(340px,100%);max-height:min(300px,60vh);overflow:auto;display:grid;gap:6px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);overflow-wrap:anywhere}.PvwIvW_strip{display:flex;flex-wrap:wrap;column-gap:14px;row-gap:2px;max-height:52px;padding:6px 24px 2px;justify-content:flex-start;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden}.PvwIvW_stripItem{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;max-width:32%}\n";
 
 },
 "src/modules/conversation/skeleton/ContextMeter.styles.js": function(module, exports, require) {
@@ -9591,7 +9592,7 @@ function ConversationRoot({ sessionId, useSession, useSessions, useWorkspaces, u
     // only `.composerStack`: overlay:true renders those as siblings, and sticky
     // on the fallback alone would leave Question/Approval panels at the content
     // end off-screen when the user is not pinned to the floor.
-    const composerSeat = ((0, jsx_runtime_1.jsx)("div", { ref: seatResizeRef, className: ConversationRoot_styles_1.default.composerSeat, "data-composer-seat": "", children: composer }));
+    const composerSeat = ((0, jsx_runtime_1.jsxs)("div", { ref: seatResizeRef, className: ConversationRoot_styles_1.default.composerSeat, "data-composer-seat": "", children: [composer, phase === 'active' && renderSlot('conversation.composer.status', {})] }));
     return ((0, jsx_runtime_1.jsxs)("div", { className: ConversationRoot_styles_1.default.root, "data-phase": phase, "data-conversation-root": "", children: [renderSlot('conversation.session.header', {}), (0, jsx_runtime_1.jsxs)("div", { className: ConversationRoot_styles_1.default.scrollBody, "data-conversation-scroll": "", children: [renderSlot('conversation.session', {}), composerSeat] })] }));
 }
 

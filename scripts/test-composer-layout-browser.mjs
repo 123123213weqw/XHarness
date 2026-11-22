@@ -24,8 +24,9 @@ try {
   const set=async changes=>{await page.evaluate(changes=>window.__composerFixture.set(changes),changes)}
   const geometry=()=>page.evaluate(()=>{
     const card=document.querySelector('[data-composer-card]'),toolbar=document.querySelector('[data-composer-toolbar]'),actions=document.querySelector('[data-composer-actions]')
+    const stats=document.querySelector('[data-composer-stats]')
     const box=el=>{const {x,y,width,height}=el.getBoundingClientRect();return {x,y,width,height}}
-    return {viewport:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth,card:box(card),toolbar:box(toolbar),actions:box(actions),buttons:[...actions.children].map(box),model:[...document.querySelectorAll('[data-xh-model-control]')].map(box),goalInCard:card.contains(document.querySelector('[data-goal-bar]')),statsInCard:card.contains(document.querySelector('[data-composer-stats]'))}
+    return {viewport:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth,card:box(card),toolbar:box(toolbar),actions:box(actions),buttons:[...actions.children].map(box),model:[...document.querySelectorAll('[data-xh-model-control]')].map(box),goalInCard:card.contains(document.querySelector('[data-goal-bar]')),stats:box(stats),statsInCard:card.contains(stats),statsOwnedByStatusSeat:stats.closest('[data-slot]')?.dataset.slot==='conversation.composer.status' && stats.closest('[data-composer-seat]')!==null}
   })
   const settle=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
   const planFlow=()=>page.evaluate(()=>{
@@ -99,7 +100,11 @@ try {
     const layout=await geometry();readings.push({dark,...layout})
     assert.equal(layout.overflow,false,JSON.stringify(layout))
     assert.equal(layout.goalInCard,true)
-    assert.equal(layout.statsInCard,true)
+    assert.equal(layout.statsInCard,false,'the monitoring strip sits under the card')
+    assert.equal(layout.statsOwnedByStatusSeat,true)
+    assert.ok(layout.stats.y>=layout.card.y+layout.card.height-1,JSON.stringify(layout))
+    assert.ok(layout.stats.x>=0&&layout.stats.x+layout.stats.width<=width+1,JSON.stringify(layout))
+    assert.ok(layout.stats.height<=62,JSON.stringify(layout))
     assert.ok(layout.card.x>=0&&layout.card.x+layout.card.width<=width,JSON.stringify(layout))
     assert.ok(layout.actions.width<=280&&layout.actions.height<=36,JSON.stringify(layout))
     for(const control of [...layout.model,...layout.buttons]) {
@@ -107,8 +112,8 @@ try {
       assert.ok(control.x>=layout.card.x&&control.x+control.width<=layout.card.x+layout.card.width+1,JSON.stringify(layout))
     }
     for(const control of layout.buttons) assert.ok(Math.abs(control.y+control.height/2-(layout.actions.y+layout.actions.height/2))<=1,JSON.stringify(layout))
-    // Persistent stats strip + inline model label add rows below the input.
-  assert.ok(layout.toolbar.height<=124,JSON.stringify(layout))
+    // Status geometry is checked separately; it cannot relax the toolbar budget.
+    assert.ok(layout.toolbar.height<=96,JSON.stringify(layout))
     if([1280,375].includes(width)) {
       await page.screenshot({path:resolve(output,`${engine}-${dark?'dark':'light'}-${width}.png`)})
       await page.locator('[data-composer-card]').screenshot({path:resolve(output,`${engine}-${dark?'dark':'light'}-${width}-card.png`),animations:'disabled'})

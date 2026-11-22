@@ -80,8 +80,8 @@ function App() {
     renderSlot={(key,owner)=>slot(key,key==='conversation.composer.bar'?<XHarnessEditableInputBar {...inputProps} {...owner}/>:
       key==='conversation.input.dock'?<><TodoDock useProjection={useProjection} t={t}/><ProgressDock useProjection={useProjection} t={goalT}/><GoalDock {...goalProps}/><QueueDock useSession={useSession} updateQueue={updateQueue} notify={(level,text)=>calls.push({level,text})} t={t}/></>:
       key==='conversation.hero.runtimeEnvironment'?<EnvironmentPicker {...owner} t={translate(environmentEn)}/>:
-      key==='conversation.composer.dock'?<StatsLine useSession={useSession} useProjection={useProjection} t={t}/>:
-      key==='conversation.session'&&state.composerPhase==='active'?<section className="preview-transcript"><div className="preview-avatar">X</div><div><h1>A clearer place to work</h1><p>Goal, message controls and conversation metrics now share one composer.</p><p>Try the model menu, draft a message or expand the metrics. This is an isolated preview; nothing is sent.</p></div></section>:null)}/>
+      key==='conversation.composer.status'?<StatsLine useSession={useSession} useProjection={useProjection} t={t}/>:
+      key==='conversation.session'&&state.composerPhase==='active'?<section className="preview-transcript"><div className="preview-avatar">X</div><div><h1>A clearer place to work</h1><p>Goal, message controls and conversation metrics now share one composer.</p><p>Try the model menu, draft a message or read the metrics. This is an isolated preview; nothing is sent.</p></div></section>:null)}/>
 }
 const render = () => flushSync(()=>root.render(<App/>))
 window.__composerFixture = { calls, shell, snapshot, projection, directory, render,
