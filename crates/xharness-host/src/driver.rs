@@ -1045,7 +1045,12 @@ impl BasicHost {
                 start_driver = Some(control_rx);
             }
         }
-        if !self.sync_authoritative_session(session_id).await? {
+        // An idle session that just spun up its driver consumes this prompt
+        // immediately; emitting the queue view only flashes a queued row in
+        // the UI before the authoritative user message lands (visible on
+        // large journals where driver startup widens the gap). Queued rows
+        // are meaningful only while a turn is already running.
+        if start_driver.is_none() && !self.sync_authoritative_session(session_id).await? {
             self.emit_queue(session_id).await;
         }
         if let Some(control_rx) = start_driver {
