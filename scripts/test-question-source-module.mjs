@@ -15,4 +15,21 @@ test('questions: chain selector claims only the first question, preserving carri
 test('questions: answer and cancellation forward correct envelope, reject stale receipt and preserve transport failure',async()=>{for(const{plugin}of apis){const sent=[];const wait={key:'k',sessionId:'s',payload:{deferred:true,questions:[{id:'one',question:'q'}]},respond:async x=>{sent.push(x);return{accepted:true}}};const pending=new plugin.PendingQuestion(wait);assert.equal(pending.key,'k');assert.equal(pending.questions,wait.payload.questions);assert.equal(pending.deferred,true);const answer={answers:[{id:'one',selected:[],custom:'free'}]};await pending.answer(answer);await pending.cancel();assert.deepEqual(json(sent),[{ok:true,value:{sessionId:'s',answer}},{ok:false,error:{code:'cancelled',message:'the user closed this question request',details:{}}}]);wait.respond=async()=>({accepted:false,reason:'resolved'});await assert.rejects(pending.answer(answer),/response rejected: resolved/);await assert.rejects(pending.cancel(),/cancellation rejected: resolved/);const failure=Error('offline');wait.respond=async()=>{throw failure};await assert.rejects(pending.answer(answer),error=>error===failure);assert.equal(new plugin.PendingQuestion({...wait,payload:{questions:[]}}).deferred,false)}})
 test('questions: plan-review narrowing never removes reachable custom/third/multiselect answers',()=>{const q={id:'p',question:'plan?',detail:'# Plan',intent:{kind:'plan-review',approve:'Yes'},options:[{label:'Yes',description:'approve'},{label:'No'}]};const cases=[[],[q],[{...q,options:[{label:'Yes'}]}],[q,q],[{...q,multiSelect:true}],[{...q,detail:undefined}],[{...q,intent:undefined}],[{...q,options:[{label:'No'}]}],[{...q,options:[...q.options,{label:'Later'}]}]];const receipts=apis.map(({plugin})=>cases.map(c=>json(plugin.planReviewOf(c)??null)));assert.deepEqual(receipts[1],receipts[0]);assert.deepEqual(receipts[0].map(Boolean),[false,true,true,false,false,false,false,false,false])})
 test('questions: recommendation parsing leaves submitted label untouched; IME Enter signals are respected',()=>{for(const{plugin}of apis){const labels=['Fast (Recommended)','Fast（推荐）','Fast (recommended)','plain','(Recommended)',''];const receipt=labels.map(label=>json(plugin.parseRecommendedLabel(label)));assert.deepEqual(receipt,json(labels.map(label=>old.plugin.parseRecommendedLabel(label))));for(const[nativeEvent,expected]of[[{isComposing:true,keyCode:13},true],[{isComposing:false,keyCode:229},true],[{isComposing:false,keyCode:13},false]])assert.equal(plugin.isComposing({nativeEvent}),expected)}})
-test('questions: same-key carrier replay, plan decision and deferred view match frozen render tree',()=>{for(const deferred of[false,true]){const receipts=apis.map(({plugin})=>{const wait={kind:'question',key:'stable',sessionId:'s',payload:{deferred,questions:[{id:'q',question:'Choose',header:'H',options:[{label:'A'}]}]},respond:async()=>({accepted:true})};const routed=plugin.QuestionComposer({matched:wait,t:x=>x});assert.equal(routed.key,'stable');const tree=plugin.QuestionFlow({pending:new plugin.PendingQuestion(wait),t:x=>x});return json(tree)});assert.deepEqual(receipts[1],receipts[0])}})
+test('questions: same-key and deferred views keep the frozen shape, with activity listeners on the question card',()=>{
+  for (const deferred of [false,true]) {
+    const receipts=apis.map(({plugin})=>{
+      const wait={kind:'question',key:'stable',sessionId:'s',payload:{deferred,questions:[{id:'q',question:'Choose',header:'H',options:[{label:'A'}]}]},respond:async()=>({accepted:true})};
+      const routed=plugin.QuestionComposer({matched:wait,t:x=>x});
+      assert.equal(routed.key,'stable');
+      return json(plugin.QuestionFlow({pending:new plugin.PendingQuestion(wait),t:x=>x}));
+    });
+    const props=receipts[1].props.children.props;
+    for (const [capture, handler] of Object.entries({
+      onPointerDownCapture:'markPointerDown',onKeyDownCapture:'markInteraction',onCompositionStartCapture:'markInteraction',
+    })) {
+      assert.equal(props[capture],`function:${handler}`,capture);
+      delete props[capture];
+    }
+    assert.deepEqual(receipts[1],receipts[0]);
+  }
+})
