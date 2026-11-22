@@ -1,5 +1,5 @@
 {
-  "rev": "5f80202e9d0377ec",
+  "rev": "298c81010a658adc",
   "entries": [
     {
       "id": "@xharness/dsh-typert-registry",
@@ -27,8 +27,8 @@
     },
     {
       "id": "@xharness/dsh-client-runtime",
-      "url": "/plugins/@xharness/dsh-client-runtime/client.js?rev=1ea9ecf74da4d903",
-      "rev": "1ea9ecf74da4d903",
+      "url": "/plugins/@xharness/dsh-client-runtime/client.js?rev=778fba6e6e4ec480",
+      "rev": "778fba6e6e4ec480",
       "inject": [
         "@xharness/dsh-client-connection",
         "@xharness/dsh-typert-registry",
@@ -43,8 +43,8 @@
     },
     {
       "id": "@xharness/dsh-session-log-export",
-      "url": "/plugins/@xharness/dsh-session-log-export/client.js?rev=8ebf1ef6d8ab5fb9",
-      "rev": "8ebf1ef6d8ab5fb9",
+      "url": "/plugins/@xharness/dsh-session-log-export/client.js?rev=09f46b0512e208be",
+      "rev": "09f46b0512e208be",
       "inject": [
         "@xharness/dsh-client-locale",
         "@xharness/dsh-client-runtime",
@@ -54,13 +54,14 @@
       "external": [
         "@xharness/dsh-client-runtime/client",
         "@xharness/dsh-client-ui-primitives",
+        "react",
         "react/jsx-runtime"
       ]
     },
     {
       "id": "@xharness/dsh-client-hmr",
-      "url": "/plugins/@xharness/dsh-client-hmr/client.js?rev=c8348588a17097f5",
-      "rev": "c8348588a17097f5",
+      "url": "/plugins/@xharness/dsh-client-hmr/client.js?rev=2ff2bcd8111f2d3c",
+      "rev": "2ff2bcd8111f2d3c",
       "inject": [],
       "external": [],
       "immediately": true
@@ -113,8 +114,8 @@
     },
     {
       "id": "@xharness/dsh-client-ui-theme",
-      "url": "/plugins/@xharness/dsh-client-ui-theme/client.js?rev=17671c048de062b2",
-      "rev": "17671c048de062b2",
+      "url": "/plugins/@xharness/dsh-client-ui-theme/client.js?rev=5a0f529c1e2fc842",
+      "rev": "5a0f529c1e2fc842",
       "inject": [
         "@xharness/dsh-client-connection",
         "@xharness/dsh-client-runtime",
@@ -149,8 +150,8 @@
     },
     {
       "id": "@xharness/dsh-client-ui-layout",
-      "url": "/plugins/@xharness/dsh-client-ui-layout/client.js?rev=5baa499b9163cdf3",
-      "rev": "5baa499b9163cdf3",
+      "url": "/plugins/@xharness/dsh-client-ui-layout/client.js?rev=1b51857aa0fc6501",
+      "rev": "1b51857aa0fc6501",
       "inject": [
         "@xharness/dsh-client-runtime",
         "@xharness/dsh-client-ui-theme"
@@ -277,8 +278,8 @@
     },
     {
       "id": "@xharness/dsh-client-ui-conversation",
-      "url": "/plugins/@xharness/dsh-client-ui-conversation/client.js?rev=220f0d3f2e52a9c2",
-      "rev": "220f0d3f2e52a9c2",
+      "url": "/plugins/@xharness/dsh-client-ui-conversation/client.js?rev=29b1ccd6e74f46b2",
+      "rev": "29b1ccd6e74f46b2",
       "inject": [
         "@xharness/dsh-client-connection",
         "@xharness/dsh-client-locale",
@@ -300,8 +301,8 @@
     },
     {
       "id": "@xlang/xharness-client-ui-runtime",
-      "url": "/plugins/@xlang/xharness-client-ui-runtime/client.js?rev=3362825a649193c0",
-      "rev": "3362825a649193c0",
+      "url": "/plugins/@xlang/xharness-client-ui-runtime/client.js?rev=252f599e7dbd4c9d",
+      "rev": "252f599e7dbd4c9d",
       "inject": [
         "@xharness/dsh-client-connection",
         "@xharness/dsh-client-ui-conversation",
@@ -428,8 +429,8 @@
     },
     {
       "id": "@xharness/dsh-client-ui-workspace",
-      "url": "/plugins/@xharness/dsh-client-ui-workspace/client.js?rev=237a5bfa20008a6e",
-      "rev": "237a5bfa20008a6e",
+      "url": "/plugins/@xharness/dsh-client-ui-workspace/client.js?rev=a7b17825b1b68dea",
+      "rev": "a7b17825b1b68dea",
       "inject": [
         "@xharness/dsh-client-connection",
         "@xharness/dsh-client-locale",
@@ -562,8 +563,8 @@
     },
     {
       "id": "@xharness/dsh-client-ui-message-feedback",
-      "url": "/plugins/@xharness/dsh-client-ui-message-feedback/client.js?rev=2d6f961ab42edb15",
-      "rev": "2d6f961ab42edb15",
+      "url": "/plugins/@xharness/dsh-client-ui-message-feedback/client.js?rev=eb91a28bbe350f88",
+      "rev": "eb91a28bbe350f88",
       "inject": [
         "@xharness/dsh-client-runtime",
         "@xharness/dsh-api-remotes",
