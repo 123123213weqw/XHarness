@@ -307,6 +307,9 @@ try {
  assert.equal(await page.locator('[data-chat-flow-kind="tool-call"]').count(),0,'fold confirmed tool failures, not the turn error')
  await summary.click();await page.locator('[data-chat-flow-key="a1"]').waitFor({state:'attached'})
  assert.equal(await page.locator('[data-chat-flow-kind="tool-call"]').count(),80)
+ // Reopening 80 rows moves the turn-level error beyond the windowed viewport.
+ // Scroll to the tail before asserting it remains visible after expansion.
+ await scroll.evaluate(e=>{e.scrollTop=e.scrollHeight})
  await page.getByText('network failed',{exact:true}).waitFor()
  assert.equal(await page.evaluate(()=>snapshot.getSnapshot().chat.nodes.get('job0').data.root.isError),true,'failed result survives collapse/reopen')
  // Returning to the same numeric turn in another session cannot leak choices.
