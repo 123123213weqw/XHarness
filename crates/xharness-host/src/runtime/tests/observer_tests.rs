@@ -239,6 +239,7 @@ async fn queued_prompt_waits_for_in_flight_model_to_finish() {
             source: json!({"kind":"user"}),
             fingerprint: None,
         };
+        let mut mux = host.event_gateway.subscribe_mux();
         host.enqueue_prompt(admission("first")).await.unwrap();
         tokio::time::timeout(Duration::from_secs(10), async {
             while provider.attempts.load(AtomicOrdering::SeqCst) == 0 {
@@ -249,6 +250,24 @@ async fn queued_prompt_waits_for_in_flight_model_to_finish() {
         .expect("first model request must start");
         host.enqueue_prompt(admission("queued")).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
+        let ids_from_frames = std::iter::from_fn(|| mux.try_recv().ok())
+            .filter(|frame| frame.payload["type"] == "session/queue")
+            .flat_map(|frame| {
+                frame.payload["items"]
+                    .as_array()
+                    .expect("queue list")
+                    .clone()
+            })
+            .map(|item| item["id"].as_str().expect("queued input id").to_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            !ids_from_frames.contains(&format!("first-{ordinal}")),
+            "idle input flashed as queued: {ids_from_frames:?}"
+        );
+        assert!(
+            ids_from_frames.contains(&format!("queued-{ordinal}")),
+            "truly queued input disappeared: {ids_from_frames:?}"
+        );
         let during = store.load(&session_id).await.unwrap().unwrap();
         assert_eq!(
             during
