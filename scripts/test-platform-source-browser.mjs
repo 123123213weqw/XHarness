@@ -242,6 +242,47 @@ for(const engine of engines){
     // owning-theme typography (including unchanged body/H1 font tokens).
     for(const name of ['base.css','design-platform.css','scrollbar.css','gradient-shadow-text.css','typography.css','shiki.css'])
      await page.addStyleTag({content:readFileSync(join(ui,'src/modules/theme',name),'utf8')})
+    // Test the actual theme and owning shell/summary styles, not merely the
+    // source text. Missing semicolons used to corrupt the unrelated tip token.
+    const darkProbeSheets=await Promise.all([
+     'layout/AppFrame.css','conversation/chat/TurnTailNodeView.css',
+    ].map(name=>page.addStyleTag({content:readFileSync(join(ui,'src/modules',name),'utf8')})))
+    const contrast=await page.evaluate(()=>{
+     const root=document.createElement('div')
+     root.className='_84hhiq_frame'
+     root.innerHTML='<div class="_84hhiq_sidebarCol"><div class="_84hhiq_regionSurface"></div></div><button class="Aov_lG_summary">Tools</button><div data-tip style="background:var(--dsw-specific-tip)"></div>'
+     document.body.append(root)
+     const side=root.querySelector('._84hhiq_regionSurface'), summary=root.querySelector('button'), tip=root.querySelector('[data-tip]')
+     const skim=()=>({
+      bodyWeight:getComputedStyle(document.body).fontWeight,
+      weightToken:getComputedStyle(document.body).getPropertyValue('--dsw-weight-body').trim(),
+      summaryWeight:getComputedStyle(summary).fontWeight,cursor:getComputedStyle(summary).cursor,
+      tip:getComputedStyle(tip).backgroundColor,frame:getComputedStyle(root).backgroundColor,
+      image:getComputedStyle(root).backgroundImage,
+      blur:getComputedStyle(side).getPropertyValue('backdrop-filter')||getComputedStyle(side).getPropertyValue('-webkit-backdrop-filter'),
+     })
+     document.body.removeAttribute('data-ds-dark-theme')
+     const light=skim()
+     document.body.setAttribute('data-ds-dark-theme','')
+     const dark=skim()
+     root.setAttribute('data-sidebar-collapsed','')
+     const collapsed=skim()
+     document.body.removeAttribute('data-ds-dark-theme')
+     root.remove()
+     return {light,dark,collapsed}
+    })
+    for(const [theme,weight] of [['light','400'],['dark','500']]){
+     const v=contrast[theme]
+     assert.deepEqual([v.bodyWeight,v.weightToken,v.summaryWeight,v.cursor],[weight,weight,weight,'pointer'],engine+'/'+theme)
+    }
+    assert.equal(contrast.light.image,'none','light shell keeps its plain surface')
+    assert.equal(contrast.light.frame,'rgb(250, 250, 250)','the light sidebar gutter keeps its original color')
+    assert.equal(contrast.light.tip,'rgb(247, 247, 247)','unrelated light tip token is not corrupted')
+    assert.equal(contrast.dark.tip,'rgb(53, 53, 53)','unrelated dark tip token is not corrupted')
+    assert.match(contrast.dark.image,/radial-gradient/)
+    assert.match(contrast.dark.blur,/blur\(24px\)/)
+    assert.ok(['','none'].includes(contrast.collapsed.blur),'no blur on collapsed sidebar')
+    for(const sheet of darkProbeSheets)await sheet.evaluate(node=>node.remove())
     const text='# **H1**\n\n## **H2**\n\n### **H3**\n\n#### **H4**\n\n##### **H5**\n\n###### **H6**\n\n正文 **强调** English $x^2$\n\n```text\ncode value\n```\n\n| Head |\n| --- |\n| body |\n\n末尾'
     for(const theme of ['light','dark'])for(const width of [960,390]){
      await page.setViewportSize({width,height:720})
@@ -305,10 +346,12 @@ for(const engine of engines){
      assert.doesNotMatch(after.prose.fontFamily,/Georgia|Songti|Noto Serif|Source Han Serif/)
      assert.equal(after.list.fontFamily,after.prose.fontFamily)
      assert.equal(after.cell.fontFamily,after.prose.fontFamily,'table body opts in despite its font shorthand')
-     const {fontFamily:oldFamily,...oldBody}=before.prose,{fontFamily:newFamily,...newBody}=after.prose
+     const {fontFamily:oldFamily,fontSize:oldSize,lineHeight:oldLine,fontWeight:oldWeight,...oldBody}=before.prose
+     const {fontFamily:newFamily,fontSize:newSize2,lineHeight:newLine2,fontWeight:newWeight,...newBody}=after.prose
      assert.equal(oldFamily,newFamily,'the assistant wrapper must not switch the font family')
-     assert.deepEqual(newBody,oldBody,'16/28/400, colors and focus styling remain unchanged')
-     assert.equal(after.prose.fontSize,'16px');assert.equal(after.prose.lineHeight,'28px');assert.equal(after.prose.fontWeight,'400')
+     assert.deepEqual([oldSize,oldLine,oldWeight],['16px','28px','400'],'unwrapped text keeps the original rhythm and weight')
+     assert.deepEqual(newBody,oldBody,'colors and focus styling remain unchanged under the 14/22 prose rhythm')
+     assert.deepEqual([newSize2,newLine2,newWeight],['14px','22px',theme==='dark'?'500':'400'],'assistant prose follows the owning theme weight without changing its rhythm')
      assert.equal(before.emphasis.fontWeight,'700');assert.equal(after.emphasis.fontWeight,'600')
      for(const [i,[fontSize,lineHeight]] of [['22px','32px'],['18px','28px'],['17px','26px']].entries()){
       const {fontSize:oldSize,lineHeight:oldLine,fontWeight:oldWeight,...oldHeading}=before.headings[i]
@@ -317,7 +360,14 @@ for(const engine of engines){
       assert.deepEqual(newHeading,oldHeading,'assistant heading '+(i+1)+' preserves font, colors and focus styling')
       assert.deepEqual([newSize,newLine,newWeight],[fontSize,lineHeight,'600'],'exact reviewed assistant heading '+(i+1))
      }
-     assert.deepEqual(after.unchanged,before.unchanged,'h4–h6/code/reasoning/user/tool/control styles stay unchanged')
+     // Inline code rides the prose font-size at its 87.5% ratio: 16→14px prose
+     // scales code 14→12.25px. Monospace entries are the derived ones; compare
+     // them without size fields and assert the exact derived ratio.
+     const stripDerived=({fontSize,lineHeight,...rest})=>rest
+     const isMono=e=>/Mono/.test(e.fontFamily)
+     assert.deepEqual(after.unchanged.filter(e=>!isMono(e)).map(stripDerived),before.unchanged.filter(e=>!isMono(e)).map(stripDerived),'h4–h6/reasoning/user/tool/control styles stay unchanged')
+     assert.deepEqual(after.unchanged.filter(isMono).map(stripDerived),before.unchanged.filter(isMono).map(stripDerived),'code colors stay unchanged; its size derives from prose')
+     for(const e of after.unchanged.filter(isMono))assert.ok(['12.25px','14px'].includes(e.fontSize),'code size derives from prose (12.25 inside, 14 outside)')
      assert.deepEqual(after.selection,before.selection);assert.equal(after.error,before.error)
      assert.equal(after.content,before.content,'streaming and settled content is never rewritten')
     }
