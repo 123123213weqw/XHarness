@@ -1,5 +1,5 @@
 {
-  "rev": "3f94137aea3294f9",
+  "rev": "97f5f79f20c0576c",
   "entries": [
     {
       "id": "@xharness/dsh-typert-registry",
@@ -667,8 +667,8 @@
     },
     {
       "id": "@xharness/dsh-client-ui-user-questions",
-      "url": "/plugins/@xharness/dsh-client-ui-user-questions/client.js?rev=d0ad3b9155af1d5b",
-      "rev": "d0ad3b9155af1d5b",
+      "url": "/plugins/@xharness/dsh-client-ui-user-questions/client.js?rev=0811cb2369399f75",
+      "rev": "0811cb2369399f75",
       "inject": [
         "@xharness/dsh-client-locale",
         "@xharness/dsh-client-ui-conversation"

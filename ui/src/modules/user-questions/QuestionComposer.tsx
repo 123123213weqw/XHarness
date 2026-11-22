@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import {
+  useEffect, useMemo, useRef, useState,
+  type ChangeEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent,
+} from 'react'
 import {clsx} from './class-names'
 import {
   Button, IconCheckOutline14, IconChevronDownOutline14, IconChevronLeftOutline14,
@@ -76,14 +79,48 @@ export function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick
   })))
   const [busy, setBusy] = useState<'answer' | 'cancel' | null>(null)
   const [error, setError] = useState<Feedback | null>(null)
-  // Collapsed to the header strip so the conversation above stays readable
-  // while the user decides; the drafts survive because the state lives here.
+  // Collapse an untouched question once on deferral. Once the user has
+  // interacted, leave the editor mounted and let them collapse it manually.
+  // Focus alone is not activity: the textarea can autofocus on mount.
   const [minimized, setMinimized] = useState(pending.deferred)
-  const deferredSeen = useRef(pending.deferred)
+  const [displayDeferred, setDisplayDeferred] = useState(pending.deferred)
+  const [pressedPointer, setPressedPointer] = useState<{ id: number } | null>(null)
+  const interacted = useRef(false)
+  const markInteraction = (): void => { interacted.current = true }
+  const markPointerDown = (event: ReactPointerEvent<HTMLElement>): void => {
+    markInteraction()
+    if (!displayDeferred && event.isPrimary && event.button === 0) setPressedPointer({ id: event.pointerId })
+  }
   useEffect(() => {
-    if (pending.deferred && !deferredSeen.current) setMinimized(true)
-    deferredSeen.current = pending.deferred
-  }, [pending.deferred])
+    if (pressedPointer === null) return
+    // A deferred banner (and the restored composer) changes hit targets.
+    // Wait until the current pointer's click has had a chance to dispatch.
+    let frame: number | undefined
+    const release = (): void => {
+      frame ??= window.requestAnimationFrame(() => {
+        // A second press can reuse the same pointerId before the next paint.
+        setPressedPointer(current => current === pressedPointer ? null : current)
+      })
+    }
+    const finish = (event: PointerEvent): void => {
+      if (event.pointerId === pressedPointer.id) release()
+    }
+    window.addEventListener('pointerup', finish, true)
+    window.addEventListener('pointercancel', finish, true)
+    window.addEventListener('blur', release)
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame)
+      window.removeEventListener('pointerup', finish, true)
+      window.removeEventListener('pointercancel', finish, true)
+      window.removeEventListener('blur', release)
+    }
+  }, [pressedPointer])
+  useEffect(() => {
+    // Only the visual transition waits. The Host has already deferred.
+    if (!pending.deferred || displayDeferred || pressedPointer !== null) return
+    setDisplayDeferred(true)
+    if (!interacted.current && busy === null) setMinimized(true)
+  }, [pending.deferred, displayDeferred, pressedPointer, busy])
   // The free-form textarea autofocuses on first presentation; re-expanding a
   // collapsed question must not steal focus from the expand toggle back into
   // the input, so focus is granted once per question index.
@@ -105,6 +142,7 @@ export function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick
   }
 
   const updateDraft = (update: (current: DraftAnswer) => DraftAnswer): void => {
+    markInteraction()
     setDrafts(current => current.map((item, itemIndex) => itemIndex === index ? update(item) : item))
     setError(null)
   }
@@ -205,15 +243,18 @@ export function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick
 
   return (
     <div className={css.frame} data-question-key={pending.key}
-      data-question-deferred={pending.deferred ? 'true' : 'false'}
+      data-question-deferred={displayDeferred ? 'true' : 'false'}
       data-question-minimized={minimized ? 'true' : 'false'}>
       <section
         className={clsx(css.card, minimized && css.cardMinimized)}
         aria-labelledby={`question-${pending.key}-${String(index)}`}
+        onPointerDownCapture={markPointerDown}
+        onKeyDownCapture={markInteraction}
+        onCompositionStartCapture={markInteraction}
       >
         <header className={css.header}>
           <div className={css.headingBlock}>
-            {pending.deferred && <div role="status">{minimized ? '待回答 · 不阻塞当前对话' : '等待回答 · 可继续不依赖答案的工作；未回答不代表同意'}</div>}
+            {displayDeferred && <div role="status">{minimized ? '待回答 · 不阻塞当前对话' : '等待回答 · 可继续不依赖答案的工作；未回答不代表同意'}</div>}
             {question.header !== undefined && <div className={css.eyebrow}>{question.header}</div>}
             <h2 className={css.title} id={`question-${pending.key}-${String(index)}`}>
               {question.question}
@@ -222,7 +263,7 @@ export function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick
           <div className={css.headerActions}>
             <button
               type="button" className={css.iconButton}
-              aria-label={pending.deferred && minimized ? '展开待回答问题' : t(minimized ? 'nav.maximize' : 'nav.minimize')}
+              aria-label={displayDeferred && minimized ? '展开待回答问题' : t(minimized ? 'nav.maximize' : 'nav.minimize')}
               title={t(minimized ? 'nav.maximize' : 'nav.minimize')}
               aria-expanded={!minimized}
               disabled={busy !== null}
