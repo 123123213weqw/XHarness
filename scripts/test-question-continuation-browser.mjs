@@ -181,10 +181,19 @@ try {
     await input.fill('submission draft');
     await page.getByRole('button',{name:'submit',exact:true}).click();
     assert.equal(await page.evaluate(()=>answers.length),1,'submit has started but has no ACK yet');
-    await input.evaluate(node=>{
+    assert.equal(await page.getByRole('button',{name:'submitting',exact:true}).isDisabled(),true);
+    // Browsers may blur a newly disabled input/button on a later paint.
+    // Test deferral with a stable usable focus target within the same card,
+    // rather than comparing an element the submission itself just disabled.
+    const stableSubmitFocus=await input.evaluate(node=>{
+      const card=node.closest('section');
+      card.tabIndex=-1;
+      card.focus();
       window.beforeSubmitDeferralInput=node;
-      window.beforeSubmitDeferralFocus=document.activeElement;
+      window.beforeSubmitDeferralFocus=card;
+      return document.activeElement===card;
     });
+    assert.equal(stableSubmitFocus,true,'focus is established before deferral');
     await page.evaluate(()=>renderQuestion(true,'q:submit-at-deadline'));
     await stillOpen();
     assert.equal(await input.inputValue(),'submission draft');
