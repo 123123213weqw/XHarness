@@ -467,3 +467,7 @@ impl BasicHost {
         Ok(true)
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "job_watch_experiment.rs"]
+mod job_watch_experiment;
