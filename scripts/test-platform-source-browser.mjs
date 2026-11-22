@@ -346,10 +346,12 @@ for(const engine of engines){
      assert.doesNotMatch(after.prose.fontFamily,/Georgia|Songti|Noto Serif|Source Han Serif/)
      assert.equal(after.list.fontFamily,after.prose.fontFamily)
      assert.equal(after.cell.fontFamily,after.prose.fontFamily,'table body opts in despite its font shorthand')
-     const {fontFamily:oldFamily,...oldBody}=before.prose,{fontFamily:newFamily,...newBody}=after.prose
+     const {fontFamily:oldFamily,fontSize:oldSize,lineHeight:oldLine,fontWeight:oldWeight,...oldBody}=before.prose
+     const {fontFamily:newFamily,fontSize:newSize2,lineHeight:newLine2,fontWeight:newWeight,...newBody}=after.prose
      assert.equal(oldFamily,newFamily,'the assistant wrapper must not switch the font family')
-     assert.deepEqual(newBody,oldBody,'16/28/400, colors and focus styling remain unchanged')
-     assert.equal(after.prose.fontSize,'16px');assert.equal(after.prose.lineHeight,'28px');assert.equal(after.prose.fontWeight,'400')
+     assert.deepEqual([oldSize,oldLine,oldWeight],['16px','28px','400'],'unwrapped text keeps the original rhythm and weight')
+     assert.deepEqual(newBody,oldBody,'colors and focus styling remain unchanged under the 14/22 prose rhythm')
+     assert.deepEqual([newSize2,newLine2,newWeight],['14px','22px',theme==='dark'?'500':'400'],'assistant prose follows the owning theme weight without changing its rhythm')
      assert.equal(before.emphasis.fontWeight,'700');assert.equal(after.emphasis.fontWeight,'600')
      for(const [i,[fontSize,lineHeight]] of [['22px','32px'],['18px','28px'],['17px','26px']].entries()){
       const {fontSize:oldSize,lineHeight:oldLine,fontWeight:oldWeight,...oldHeading}=before.headings[i]
@@ -358,7 +360,14 @@ for(const engine of engines){
       assert.deepEqual(newHeading,oldHeading,'assistant heading '+(i+1)+' preserves font, colors and focus styling')
       assert.deepEqual([newSize,newLine,newWeight],[fontSize,lineHeight,'600'],'exact reviewed assistant heading '+(i+1))
      }
-     assert.deepEqual(after.unchanged,before.unchanged,'h4–h6/code/reasoning/user/tool/control styles stay unchanged')
+     // Inline code rides the prose font-size at its 87.5% ratio: 16→14px prose
+     // scales code 14→12.25px. Monospace entries are the derived ones; compare
+     // them without size fields and assert the exact derived ratio.
+     const stripDerived=({fontSize,lineHeight,...rest})=>rest
+     const isMono=e=>/Mono/.test(e.fontFamily)
+     assert.deepEqual(after.unchanged.filter(e=>!isMono(e)).map(stripDerived),before.unchanged.filter(e=>!isMono(e)).map(stripDerived),'h4–h6/reasoning/user/tool/control styles stay unchanged')
+     assert.deepEqual(after.unchanged.filter(isMono).map(stripDerived),before.unchanged.filter(isMono).map(stripDerived),'code colors stay unchanged; its size derives from prose')
+     for(const e of after.unchanged.filter(isMono))assert.ok(['12.25px','14px'].includes(e.fontSize),'code size derives from prose (12.25 inside, 14 outside)')
      assert.deepEqual(after.selection,before.selection);assert.equal(after.error,before.error)
      assert.equal(after.content,before.content,'streaming and settled content is never rewritten')
     }
