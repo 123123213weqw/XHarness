@@ -100,15 +100,54 @@ function QuestionFlow({ pending, t }) {
     })));
     const [busy, setBusy] = (0, react_1.useState)(null);
     const [error, setError] = (0, react_1.useState)(null);
-    // Collapsed to the header strip so the conversation above stays readable
-    // while the user decides; the drafts survive because the state lives here.
+    // Collapse an untouched question once on deferral. Once the user has
+    // interacted, leave the editor mounted and let them collapse it manually.
+    // Focus alone is not activity: the textarea can autofocus on mount.
     const [minimized, setMinimized] = (0, react_1.useState)(pending.deferred);
-    const deferredSeen = (0, react_1.useRef)(pending.deferred);
+    const [displayDeferred, setDisplayDeferred] = (0, react_1.useState)(pending.deferred);
+    const [pressedPointer, setPressedPointer] = (0, react_1.useState)(null);
+    const interacted = (0, react_1.useRef)(false);
+    const markInteraction = () => { interacted.current = true; };
+    const markPointerDown = (event) => {
+        markInteraction();
+        if (!displayDeferred && event.isPrimary && event.button === 0)
+            setPressedPointer({ id: event.pointerId });
+    };
     (0, react_1.useEffect)(() => {
-        if (pending.deferred && !deferredSeen.current)
+        if (pressedPointer === null)
+            return;
+        // A deferred banner (and the restored composer) changes hit targets.
+        // Wait until the current pointer's click has had a chance to dispatch.
+        let frame;
+        const release = () => {
+            frame ?? (frame = window.requestAnimationFrame(() => {
+                // A second press can reuse the same pointerId before the next paint.
+                setPressedPointer(current => current === pressedPointer ? null : current);
+            }));
+        };
+        const finish = (event) => {
+            if (event.pointerId === pressedPointer.id)
+                release();
+        };
+        window.addEventListener('pointerup', finish, true);
+        window.addEventListener('pointercancel', finish, true);
+        window.addEventListener('blur', release);
+        return () => {
+            if (frame !== undefined)
+                window.cancelAnimationFrame(frame);
+            window.removeEventListener('pointerup', finish, true);
+            window.removeEventListener('pointercancel', finish, true);
+            window.removeEventListener('blur', release);
+        };
+    }, [pressedPointer]);
+    (0, react_1.useEffect)(() => {
+        // Only the visual transition waits. The Host has already deferred.
+        if (!pending.deferred || displayDeferred || pressedPointer !== null)
+            return;
+        setDisplayDeferred(true);
+        if (!interacted.current && busy === null)
             setMinimized(true);
-        deferredSeen.current = pending.deferred;
-    }, [pending.deferred]);
+    }, [pending.deferred, displayDeferred, pressedPointer, busy]);
     // The free-form textarea autofocuses on first presentation; re-expanding a
     // collapsed question must not steal focus from the expand toggle back into
     // the input, so focus is granted once per question index.
@@ -129,6 +168,7 @@ function QuestionFlow({ pending, t }) {
         });
     };
     const updateDraft = (update) => {
+        markInteraction();
         setDrafts(current => current.map((item, itemIndex) => itemIndex === index ? update(item) : item));
         setError(null);
     };
@@ -220,7 +260,7 @@ function QuestionFlow({ pending, t }) {
         }
         submitDrafts(nextDrafts);
     };
-    return ((0, jsx_runtime_1.jsx)("div", { className: QuestionComposer_styles_1.default.frame, "data-question-key": pending.key, "data-question-deferred": pending.deferred ? 'true' : 'false', "data-question-minimized": minimized ? 'true' : 'false', children: (0, jsx_runtime_1.jsxs)("section", { className: (0, class_names_1.clsx)(QuestionComposer_styles_1.default.card, minimized && QuestionComposer_styles_1.default.cardMinimized), "aria-labelledby": `question-${pending.key}-${String(index)}`, children: [(0, jsx_runtime_1.jsxs)("header", { className: QuestionComposer_styles_1.default.header, children: [(0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.headingBlock, children: [pending.deferred && (0, jsx_runtime_1.jsx)("div", { role: "status", children: minimized ? '待回答 · 不阻塞当前对话' : '等待回答 · 可继续不依赖答案的工作；未回答不代表同意' }), question.header !== undefined && (0, jsx_runtime_1.jsx)("div", { className: QuestionComposer_styles_1.default.eyebrow, children: question.header }), (0, jsx_runtime_1.jsx)("h2", { className: QuestionComposer_styles_1.default.title, id: `question-${pending.key}-${String(index)}`, children: question.question })] }), (0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.headerActions, children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: QuestionComposer_styles_1.default.iconButton, "aria-label": pending.deferred && minimized ? '展开待回答问题' : t(minimized ? 'nav.maximize' : 'nav.minimize'), title: t(minimized ? 'nav.maximize' : 'nav.minimize'), "aria-expanded": !minimized, disabled: busy !== null, onClick: () => { setMinimized(current => !current); }, children: minimized ? (0, jsx_runtime_1.jsx)(primitives_1.IconChevronUpOutline14, {}) : (0, jsx_runtime_1.jsx)(primitives_1.IconChevronDownOutline14, {}) }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: QuestionComposer_styles_1.default.iconButton, "aria-label": t('nav.cancel'), title: t('nav.cancel'), disabled: busy !== null, onClick: cancelFlow, children: (0, jsx_runtime_1.jsx)(primitives_1.IconCloseOutline16, {}) })] })] }), !minimized && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.body, "data-question-scroll": true, children: [question.detail !== undefined && ((0, jsx_runtime_1.jsx)("div", { className: QuestionComposer_styles_1.default.detail, children: (0, jsx_runtime_1.jsx)(primitives_1.MarkdownText, { text: question.detail }) })), (0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.options, role: question.multiSelect === true ? 'group' : 'radiogroup', children: [(question.options ?? []).map((option, optionIndex) => {
+    return ((0, jsx_runtime_1.jsx)("div", { className: QuestionComposer_styles_1.default.frame, "data-question-key": pending.key, "data-question-deferred": displayDeferred ? 'true' : 'false', "data-question-minimized": minimized ? 'true' : 'false', children: (0, jsx_runtime_1.jsxs)("section", { className: (0, class_names_1.clsx)(QuestionComposer_styles_1.default.card, minimized && QuestionComposer_styles_1.default.cardMinimized), "aria-labelledby": `question-${pending.key}-${String(index)}`, onPointerDownCapture: markPointerDown, onKeyDownCapture: markInteraction, onCompositionStartCapture: markInteraction, children: [(0, jsx_runtime_1.jsxs)("header", { className: QuestionComposer_styles_1.default.header, children: [(0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.headingBlock, children: [displayDeferred && (0, jsx_runtime_1.jsx)("div", { role: "status", children: minimized ? '待回答 · 不阻塞当前对话' : '等待回答 · 可继续不依赖答案的工作；未回答不代表同意' }), question.header !== undefined && (0, jsx_runtime_1.jsx)("div", { className: QuestionComposer_styles_1.default.eyebrow, children: question.header }), (0, jsx_runtime_1.jsx)("h2", { className: QuestionComposer_styles_1.default.title, id: `question-${pending.key}-${String(index)}`, children: question.question })] }), (0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.headerActions, children: [(0, jsx_runtime_1.jsx)("button", { type: "button", className: QuestionComposer_styles_1.default.iconButton, "aria-label": displayDeferred && minimized ? '展开待回答问题' : t(minimized ? 'nav.maximize' : 'nav.minimize'), title: t(minimized ? 'nav.maximize' : 'nav.minimize'), "aria-expanded": !minimized, disabled: busy !== null, onClick: () => { setMinimized(current => !current); }, children: minimized ? (0, jsx_runtime_1.jsx)(primitives_1.IconChevronUpOutline14, {}) : (0, jsx_runtime_1.jsx)(primitives_1.IconChevronDownOutline14, {}) }), (0, jsx_runtime_1.jsx)("button", { type: "button", className: QuestionComposer_styles_1.default.iconButton, "aria-label": t('nav.cancel'), title: t('nav.cancel'), disabled: busy !== null, onClick: cancelFlow, children: (0, jsx_runtime_1.jsx)(primitives_1.IconCloseOutline16, {}) })] })] }), !minimized && ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.body, "data-question-scroll": true, children: [question.detail !== undefined && ((0, jsx_runtime_1.jsx)("div", { className: QuestionComposer_styles_1.default.detail, children: (0, jsx_runtime_1.jsx)(primitives_1.MarkdownText, { text: question.detail }) })), (0, jsx_runtime_1.jsxs)("div", { className: QuestionComposer_styles_1.default.options, role: question.multiSelect === true ? 'group' : 'radiogroup', children: [(question.options ?? []).map((option, optionIndex) => {
                                             const selected = draft.selected.includes(option.label);
                                             const display = parseRecommendedLabel(option.label);
                                             return ((0, jsx_runtime_1.jsxs)("button", { type: "button", className: (0, class_names_1.clsx)(QuestionComposer_styles_1.default.option, selected && question.multiSelect !== true && QuestionComposer_styles_1.default.optionSelected), role: question.multiSelect === true ? 'checkbox' : 'radio', "aria-checked": selected, "aria-label": display.label, disabled: busy !== null, onClick: () => { choose(option.label); }, onKeyDown: (event) => {

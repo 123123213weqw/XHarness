@@ -140,23 +140,30 @@ for (const [label, api] of [['legacy', old], ['source', current]]) {
   })
 }
 
-test('source: strict HMR SSE boundary and serialized lifecycle preserve old behavior', async () => {
+test('source: strict HMR SSE boundary and serialized lifecycle preserve old behavior', {timeout:30_000}, async () => {
   const trace = []; let receive; let closed = false; let dispose
+  const registered = Promise.withResolvers()
+  const settled = Promise.withResolvers()
+  let passes = 0
+  const onReload = async () => {
+    trace.push('new.await')
+    if (++passes === 2) settled.resolve()
+  }
   const oldDocument = globalThis.document; const oldEventSource = globalThis.EventSource
   globalThis.document = {querySelectorAll: () => [{getAttribute: () => 'a', remove: () => trace.push('style')}]}
-  globalThis.EventSource = class { constructor(url) { trace.push(url) } addEventListener(_event, listener) { receive = listener } close() { closed = true } }
+  globalThis.EventSource = class { constructor(url) { trace.push(url) } addEventListener(_event, listener) { receive = listener; registered.resolve() } close() { closed = true } }
   try {
     const hmr = sourceModule('client-hmr', { setTimeout, clearTimeout, fetch: async (url, options) => { assert.equal(url, '/plugins/events'); assert.equal(options.method, 'HEAD'); assert.equal(options.credentials, 'same-origin'); return {ok:true,headers:{get:()=> 'text/event-stream; charset=utf-8'}} } })
-    const entry = {options: {name: 'a'}, ctx: {registry: {delete: () => trace.push('registry')}}, fiber: {runtime: {callback: 'runtime'}, inertia: undefined, await: async () => trace.push('new.await')}, refresh: async () => { trace.push('refresh'); entry.fiber = {runtime: null, await: async () => trace.push('new.await')} }}
+    const entry = {options: {name: 'a'}, ctx: {registry: {delete: () => trace.push('registry')}}, fiber: {runtime: {callback: 'runtime'}, inertia: undefined, await: onReload}, refresh: async () => { trace.push('refresh'); entry.fiber = {runtime: null, await: onReload} }}
     hmr.apply({modules: {invalidate: id => trace.push(`invalidate:${id}`), prefetch: async id => { trace.push(`prefetch:${id}`); await new Promise(r => setTimeout(r,2)) }}, loader: {entries: () => [entry]}, logger: {warn: message => trace.push(message), error: message => trace.push(String(message))}, effect: effect => {dispose = effect()} })
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await registered.promise
     receive({data: JSON.stringify({type: 'rebuilt', id: 'a', rev: 'r'})}); receive({data: JSON.stringify({type: 'rebuilt', id: 'a', rev: 's'})})
-    await new Promise(r => setTimeout(r, 30))
+    await settled.promise
     assert.deepEqual(trace.slice(1), ['invalidate:a', 'prefetch:a', 'registry', 'style', 'refresh', 'new.await', 'invalidate:a', 'prefetch:a', 'style', 'refresh', 'new.await'])
     receive({data: 'not-json'}); receive({data: JSON.stringify(null)}); receive({data: JSON.stringify({type:'rebuilt',id:3})})
     assert.match(trace.at(-3), /unparseable/); assert.match(trace.at(-2), /invalid/); assert.match(trace.at(-1), /invalid/)
-    dispose(); assert.equal(closed, true)
-  } finally {globalThis.document = oldDocument; globalThis.EventSource = oldEventSource}
+    dispose(); dispose = undefined; assert.equal(closed, true)
+  } finally {dispose?.(); globalThis.document = oldDocument; globalThis.EventSource = oldEventSource}
 })
 
 function gatewayContext() {
