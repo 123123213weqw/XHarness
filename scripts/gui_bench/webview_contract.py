@@ -9,11 +9,24 @@ import time
 
 
 class Contract:
+    # Receipts proving the native owner scheduled nothing and a fresh
+    # observation resolves: the frame was superseded (a navigation policy
+    # event, a layout re-apply or a newer observation), the page was frozen past
+    # the action deadline, or the per-tab gate was busy. Applied and unknown
+    # effects are never in this set and are never re-driven.
+    SUPERSEDED = ('stale_frame', 'stale_target', 'stale_ref',
+                  'action expired before execution', 'native browser is busy')
+
     def __init__(self, call):
         self.call, self.actions, self.denials = call, [], []
         self.readiness_denials = []
         self.observed_postconditions = []
+        self.superseded_frames = []
         self._target_page_offset = 0
+
+    def superseded(self, receipt):
+        return (receipt.get('ok') is False and receipt.get('effect') == 'not_started'
+                and str(receipt.get('message') or '').startswith(self.SUPERSEDED))
 
     def observe(self, scope='page', **paging):
         # AppFrame expands/resizes a real native pane asynchronously. Retry
@@ -166,10 +179,17 @@ class Contract:
         evidence['verification'] = 'matched_observed_state_not_applied_receipt'
 
     def act(self, action, label, scope='page', *, verify_unknown_select=False, **fields):
-        snapshot, node = self.target(label, scope)
-        if node['disabled']: raise AssertionError('contract target is disabled: ' + label)
-        request = dict(action=action, frame_id=snapshot['frame_id'], ref=node['ref'], **fields)
-        receipt = self.call('perform', request)
+        # An action is re-driven only from a new observation after a receipt that
+        # proves nothing was scheduled. Same bound as target()/observe().
+        deadline = time.monotonic() + 5
+        while True:
+            snapshot, node = self.target(label, scope)
+            if node['disabled']: raise AssertionError('contract target is disabled: ' + label)
+            request = dict(action=action, frame_id=snapshot['frame_id'], ref=node['ref'], **fields)
+            receipt = self.call('perform', request)
+            if not self.superseded(receipt) or time.monotonic() >= deadline: break
+            self.superseded_frames.append(dict(action=action, label=label, message=receipt.get('message')))
+            time.sleep(.05)
         if receipt.get('ok') is not True or receipt.get('effect') != 'applied':
             if (verify_unknown_select is True and action == 'select'
                     and receipt.get('ok') is False and receipt.get('effect') == 'unknown'):
@@ -226,4 +246,5 @@ class Contract:
         else: raise ValueError('unknown contract task')
         return dict(actions=self.actions, denials=self.denials,
                     readiness_denials=self.readiness_denials,
+                    superseded_frames=self.superseded_frames,
                     observed_postconditions=self.observed_postconditions, model_task_passed=None)

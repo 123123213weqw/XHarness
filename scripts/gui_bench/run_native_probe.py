@@ -301,6 +301,17 @@ def empty_webview_url_passed(log_text: str) -> bool:
         return False
 
 
+def failure_reasons(log_text: str) -> list[str]:
+    """The probe's own verdict, mirrored into the CI console and receipt.
+
+    Evidence and the single failure verdict go to a log that only reaches an
+    artifact. Without the verdict in the job log, a later green rerun leaves
+    nothing that explains the red build. Only the probe's fixed verdict prefix
+    is echoed, never arbitrary page or CLI output."""
+    prefix = "Native observation probe failed: "
+    return [line[len(prefix):].strip()[:300] for line in log_text.splitlines() if line.startswith(prefix)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -337,6 +348,7 @@ def main() -> int:
     finally:
         cleaned = cleanup_profile(directory)
     log_text = (args.evidence_dir / "native-probe.log").read_text(encoding="utf-8", errors="replace")
+    receipt['probe_failure'] = failure_reasons(log_text)
     capabilities = hard_capabilities(log_text)
     receipt['subframe_navigation_passed'] = subframe_navigation_passed(log_text)
     receipt['browser_lifecycle_passed'] = browser_lifecycle_passed(log_text)
@@ -364,6 +376,8 @@ def main() -> int:
     receipt["cleanup_passed"] = cleaned
     receipt.update(exit_code=code, seconds=round(time.monotonic() - start, 3), passed=code == 0 and cleaned and completed, contract_completed=completed)
     (args.evidence_dir / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    for reason in receipt['probe_failure']:
+        print(f"NATIVE_PROBE_FAILURE {reason}")
     print(json.dumps(receipt))
     return 0 if code == 0 and cleaned and completed else 1
 

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from scripts.gui_bench.run_native_probe import command, environment, cleanup, cleanup_profile, hard_capabilities, contract_completed, core_native_apis_passed, native_coordinates_verified, empty_webview_url_passed
+from scripts.gui_bench.run_native_probe import command, environment, cleanup, cleanup_profile, hard_capabilities, contract_completed, core_native_apis_passed, native_coordinates_verified, empty_webview_url_passed, failure_reasons
 
 
 
@@ -161,6 +161,41 @@ class NativeProbeTests(unittest.TestCase):
                 self.assertEqual(receipt['native_api_core_passed'], bool(evidence))
                 self.assertEqual(receipt['passed'], expected)
                 self.assertEqual(exit_code, 0 if expected else 1)
+
+    def test_probe_verdict_reaches_the_console_and_the_receipt(self):
+        import io
+        import json
+        from contextlib import redirect_stdout
+        from scripts.gui_bench import run_native_probe as probe
+
+        verdict = 'Ok(Err("native callback unavailable"))'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'fixture-binary'
+            binary.write_bytes(b'test fixture; not executable Rust')
+            evidence = root / 'evidence'
+            out = io.StringIO()
+
+            def fake_probe(_binary, _env, handle):
+                handle.write(('BROWSER_LIFECYCLE_EVIDENCE {"passed":true}\n'
+                              'Native observation probe failed: ' + verdict + '\n').encode('utf-8'))
+                return 1
+
+            with patch.object(probe.sys, 'platform', 'darwin'), \
+                 patch.object(probe.sys, 'argv', ['probe', str(binary), '--evidence-dir', str(evidence)]), \
+                 patch.object(probe, 'run_probe', side_effect=fake_probe), \
+                 patch.object(probe, 'native_api_evidence', return_value={}), \
+                 patch.object(probe, 'production_native_evidence', return_value={'passed': False}), \
+                 patch('scripts.gui_bench.check_fit_viewport.verify', return_value={'passed': False}), \
+                 redirect_stdout(out):
+                self.assertEqual(probe.main(), 1)
+            receipt = json.loads((evidence / 'receipt.json').read_text())
+            self.assertEqual(receipt['probe_failure'], [verdict])
+            self.assertEqual(out.getvalue().splitlines()[0], 'NATIVE_PROBE_FAILURE ' + verdict)
+        # Only the fixed verdict prefix is mirrored, and it stays bounded.
+        noisy = 'token=SECRET\npage output\nNative observation probe failed: ' + 'x' * 400
+        self.assertEqual(failure_reasons(noisy), ['x' * 300])
+        self.assertEqual(failure_reasons('token=SECRET\nNative Tauri DOM probe passed:'), [])
 
     def test_windows_vm_builder_binds_exact_source_and_keeps_previous_oracle(self):
         root=Path(__file__).resolve().parents[2]

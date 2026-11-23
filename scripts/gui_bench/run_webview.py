@@ -157,7 +157,8 @@ def verify_unbound_discovery(call):
         call('observe', {})
     except RuntimeError as error:
         if str(error) != unbound:
-            raise AssertionError('unrelated observation failed without a scope denial') from error
+            # run() keeps only the assertion text; name the native refusal there.
+            raise AssertionError('unrelated observation failed without a scope denial: ' + str(error)[:200]) from error
     else:
         raise AssertionError('unrelated chat could observe native page')
     receipt = call('perform', {'action':'click', 'frame_id':'0'*32, 'ref':'n0'})
