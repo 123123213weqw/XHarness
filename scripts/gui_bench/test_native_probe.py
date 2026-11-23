@@ -9,6 +9,18 @@ from unittest.mock import patch
 from scripts.gui_bench.run_native_probe import command, environment, cleanup, cleanup_profile, hard_capabilities, contract_completed, core_native_apis_passed, native_coordinates_verified, empty_webview_url_passed
 
 
+
+def background_evidence():
+    import json
+    names = ('BACKGROUND_OPEN_EVIDENCE', 'BACKGROUND_CREATION_EVIDENCE',
+             'BACKGROUND_ISOLATION_EVIDENCE', 'BROWSER_SESSION_REQUEST_EVIDENCE',
+             'FIT_VIEWPORT_EVIDENCE', 'COMPONENT_PICKER_EVIDENCE', 'PRODUCTION_NATIVE_EVIDENCE')
+    records = [(name, dict(passed=True)) for name in names]
+    records.extend(('BACKGROUND_OPERATION_EVIDENCE',
+                    dict(passed=True, case=case, dom=True, B_unchanged=True))
+                   for case in ('switch', 'collapsed'))
+    return ''.join(f'\n{name} {json.dumps(value)}' for name, value in records)
+
 class NativeProbeTests(unittest.TestCase):
     def test_nil_webview_url_evidence_is_required_and_fail_closed(self):
         import json
@@ -50,14 +62,17 @@ class NativeProbeTests(unittest.TestCase):
         self.assertNotIn('"desktop_browser_input"',main)
         self.assertNotIn('"desktop_browser_screenshot"',main)
 
-    def test_native_lifecycle_probe_has_one_adapter_and_a_bounded_ready_deadline(self):
+    def test_native_lifecycle_probe_exercises_service_owned_readiness_with_a_bounded_deadline(self):
         root = Path(__file__).resolve().parents[2]
         source = (root/'apps/desktop/src-tauri/examples/browser-inspect-probe.rs').read_text()
         lifecycle = source.split('async fn lifecycle_probe')[1].split('async fn native_api_probe')[0]
-        self.assertNotIn('for _ in 0..100', lifecycle)
-        self.assertIn('browser_lifecycle::OPEN_TIMEOUT', lifecycle)
-        self.assertIn('loaded_receipt(&owner, &tab_id)', lifecycle)
-        self.assertIn('Native lifecycle readiness failed:', lifecycle)
+        self.assertIn('background_lifecycle::run(app, url.to_owned()).await', lifecycle)
+        service = (root/'apps/desktop/src-tauri/src/browser_lifecycle.rs').read_text()
+        self.assertIn('tokio::time::timeout(OPEN_TIMEOUT,', service)
+        self.assertIn('loaded_receipt(owner, &tab_id)', service)
+        fixture = (root/'apps/desktop/src-tauri/examples/probe_support/background_lifecycle.rs').read_text()
+        self.assertIn('XHARNESS_NATIVE_PROBE_READY_DELAY_MS', fixture)
+        self.assertIn('renderer_ready_adapter":false', fixture)
         self.assertNotIn('WebviewUrl::App("index.html"', source)
         self.assertIn('WebviewUrl::External(shell)', source)
         runner = (root/'scripts/gui_bench/run_native_probe.py').read_text()
@@ -103,11 +118,12 @@ class NativeProbeTests(unittest.TestCase):
         subframe = dict(same_origin='passed', cross_origin='passed', same_document='passed',
                         guest_caller='denied', top_level_address='preserved',
                         loaded_owner_receipt='preserved', test_only=True)
-        log = ("Native lifecycle probe passed:\nNative Tauri DOM probe passed:\n"
+        log = ("Native Tauri DOM probe passed:\n"
                + "HARD_CAPABILITY_EVIDENCE " + json.dumps(capabilities)
                + "\nSUBFRAME_NAVIGATION_EVIDENCE " + json.dumps(subframe)
                + '\nBROWSER_LIFECYCLE_EVIDENCE {"passed":true,"test_only":true,"main_alive":true,"created":2,"close_accepted":2}'
-               + '\nEMPTY_WEBVIEW_URL_EVIDENCE {"passed":true,"nil_url_reads":32,"result":"recoverable_not_found","main_alive":true,"test_only":true}')
+               + '\nEMPTY_WEBVIEW_URL_EVIDENCE {"passed":true,"nil_url_reads":32,"result":"recoverable_not_found","main_alive":true,"test_only":true}'
+               + background_evidence())
         api = dict(status='tested', native_mouse={'passed':True}, native_keyboard={'passed':True},
                    cross_origin_pointer={'passed':True}, snapshot_sequence_verified=True,
                    observed={'pointers':[dict(type='click', trusted=True, id=target, x=x, y=y)
@@ -208,19 +224,25 @@ class NativeProbeTests(unittest.TestCase):
         self.assertFalse(contract_completed("Native observation probe failed: native open did not reach ready"))
         evidence = {name: {"status": "not_implemented"} for name in [
             "trusted_input", "cross_origin_frames", "screenshot", "recording", "hidden_tab_actions"]}
-        log = "Native lifecycle probe passed:\nNative Tauri DOM probe passed:\nHARD_CAPABILITY_EVIDENCE " + json.dumps(evidence)
+        log = "Native Tauri DOM probe passed:\nHARD_CAPABILITY_EVIDENCE " + json.dumps(evidence)
         self.assertFalse(contract_completed(log), 'older probe lacks subframe regression evidence')
         subframe = '\nSUBFRAME_NAVIGATION_EVIDENCE ' + json.dumps({
             'same_origin': 'passed', 'cross_origin': 'passed', 'same_document': 'passed', 'guest_caller': 'denied',
             'top_level_address': 'preserved', 'loaded_owner_receipt': 'preserved', 'test_only': True})
         lifecycle = '\nBROWSER_LIFECYCLE_EVIDENCE ' + json.dumps(dict(passed=True,test_only=True,main_alive=True,created=2,close_accepted=2))
         self.assertFalse(contract_completed(log + subframe), 'missing teardown evidence must fail')
-        self.assertTrue(contract_completed(log + subframe + lifecycle))
-        self.assertFalse(contract_completed(log + subframe + lifecycle + lifecycle))
-        self.assertFalse(contract_completed(log + subframe + lifecycle.replace('"main_alive": true', '"main_alive": false')))
-        self.assertFalse(contract_completed(log + subframe + subframe), 'duplicate evidence is ambiguous')
-        self.assertFalse(contract_completed(log + subframe.replace('"cross_origin": "passed"', '"cross_origin": "failed"')))
-        self.assertFalse(contract_completed(log + "\nNative observation probe failed:"))
+        prior = log + subframe + lifecycle
+        self.assertFalse(contract_completed(prior), 'missing production background evidence must fail')
+        self.assertFalse(contract_completed(prior + '\nNative lifecycle probe passed:'))
+        complete = prior + background_evidence()
+        self.assertTrue(contract_completed(complete))
+        self.assertFalse(contract_completed(complete + lifecycle))
+        self.assertFalse(contract_completed(complete.replace('"main_alive": true', '"main_alive": false')))
+        self.assertFalse(contract_completed(complete + subframe), 'duplicate evidence is ambiguous')
+        self.assertFalse(contract_completed(complete.replace('"cross_origin": "passed"', '"cross_origin": "failed"')))
+        self.assertFalse(contract_completed(complete.replace('"collapsed"', '"switch"')))
+        self.assertFalse(contract_completed(complete.replace('"B_unchanged": true', '"B_unchanged": false')))
+        self.assertFalse(contract_completed(complete + "\nNative observation probe failed:"))
 
     def test_capability_evidence_is_not_inferred_from_dom_pass_or_silent_skip(self):
         import json

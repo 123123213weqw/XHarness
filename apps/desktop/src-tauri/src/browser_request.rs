@@ -29,7 +29,7 @@ fn authorize(
     epoch: u64,
     action: bool,
 ) -> Result<url::Url, String> {
-    state.native_dispatch_target(view.label(), inspector)?;
+    state.native_dispatch_target(view.label(), inspector, false)?;
     if inspector.navigation_epoch.load(Ordering::SeqCst) != epoch {
         return Err("browser binding changed during request".into());
     }

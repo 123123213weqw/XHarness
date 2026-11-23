@@ -47,6 +47,7 @@ enum Backend {
 enum Operation {
     List,
     Control,
+    Retire,
     Observe,
     Perform,
     Evaluate,
@@ -161,7 +162,7 @@ async fn serve(mut stream: TcpStream, app: AppHandle, secret: &str) -> Result<()
     } else {
         MAX_REPLY
     };
-    // Closing the Host socket cancels open's UI rendezvous too. No detached
+    // Closing the Host socket cancels provisional service-owned creation too. No detached
     // navigation continues after a caller has abandoned the request.
     let result = tokio::select! {
         result = dispatch(&app, request) => result,
@@ -181,6 +182,33 @@ async fn serve(mut stream: TcpStream, app: AppHandle, secret: &str) -> Result<()
 }
 
 async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
+    // The authenticated Host lifecycle invokes this on session retirement.
+    // The model-facing tool dispatcher never exposes this operation.
+    if matches!(request.op, Operation::Retire) {
+        if !matches!(request.backend, Backend::Browser) || request.arguments != json!({}) {
+            return Err("invalid browser retirement request".into());
+        }
+        let result = app
+            .state::<crate::headless_browser::Browsers>()
+            .close(&request.owner)
+            .await?;
+        if result["tab_id"].is_string()
+            && app
+                .emit_to(
+                    "main",
+                    "xharness-headless-page",
+                    json!({
+                        "owner":request.owner,"closed":true,"tabId":result["tab_id"]
+                    }),
+                )
+                .is_err()
+        {
+            // Presentation is best effort after a confirmed retirement.
+            eprintln!("retired browser notification failed");
+        }
+        return Ok(result);
+    }
+
     if matches!(request.backend, Backend::Browser) {
         let op = headless_operation(&request.op)?;
         let closing = request.arguments["action"] == "close";
@@ -212,7 +240,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                 Ok(browser_lifecycle::descriptor(&state, &request.owner))
             }
             browser_lifecycle::ControlRequest::Close {} => {
-                if let Err(error) = state.delegated_tab(&request.owner) {
+                if let Err(error) = state.owned_tab(&request.owner) {
                     return Ok(rejected_action(&error));
                 }
                 app.state::<browser_lifecycle::BrowserLifecycle>()
@@ -249,7 +277,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
         Operation::Input => crate::browser_activity::Operation::Input,
         Operation::Request => crate::browser_activity::Operation::Request,
         Operation::ReadResponse => crate::browser_activity::Operation::ReadResponse,
-        Operation::List | Operation::Control => unreachable!(),
+        Operation::List | Operation::Control | Operation::Retire => unreachable!(),
     };
     let _activity =
         crate::browser_activity::Activity::start(&request.owner, &tab, operation, |event| {
@@ -322,7 +350,7 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
                 Err(error) => Ok(rejected_action(&error)),
             }
         }
-        Operation::List | Operation::Control => unreachable!(),
+        Operation::List | Operation::Control | Operation::Retire => unreachable!(),
     }
 }
 
@@ -331,6 +359,7 @@ fn headless_operation(operation: &Operation) -> Result<&'static str, String> {
     match operation {
         Operation::List => Ok("list"),
         Operation::Control => Ok("control"),
+        Operation::Retire => Err("browser retirement requires the Host lifecycle".into()),
         Operation::Observe => Ok("observe"),
         Operation::Perform => Ok("perform"),
         Operation::Evaluate => Ok("evaluate"),

@@ -2,11 +2,14 @@
 #![forbid(unsafe_code)]
 mod evaluate;
 mod helper;
+mod manual;
 mod process;
+mod seat;
 pub use helper::run_if_requested as run_helper;
 #[cfg(test)]
 mod tests;
 use process::Process;
+use seat::{Driver, Seat, Ticket};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -34,7 +37,21 @@ struct Slot {
     pending: AtomicBool,
     id: std::sync::Mutex<Option<String>>,
     instance: Mutex<Option<Instance>>,
-    preview: Mutex<Option<tokio::task::JoinHandle<Result<Value, String>>>>,
+    preview: Mutex<Option<PreviewTask>>,
+    seat: Seat,
+    manual_frame: std::sync::Mutex<Option<Frame>>,
+}
+impl Slot {
+    fn admit(&self, ticket: Ticket) -> Result<seat::Effect<'_>, String> {
+        if self.retired.load(Ordering::SeqCst) {
+            return Err("browser session was closed".into());
+        }
+        self.seat.effect(ticket)
+    }
+}
+struct PreviewTask {
+    ticket: Ticket,
+    task: tokio::task::JoinHandle<Result<(Value, Option<String>), String>>,
 }
 struct OpenLease(Arc<Slot>);
 impl Drop for OpenLease {
@@ -57,6 +74,9 @@ fn nonce() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| "browser entropy unavailable")?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+fn known_effect(value: &Value) -> bool {
+    matches!(value["effect"].as_str(), Some("applied" | "not_started"))
 }
 fn rejected(message: &str) -> Value {
     json!({"ok":false,"effect":"not_started","message":message})
@@ -99,21 +119,35 @@ impl Browsers {
         Ok(slot)
     }
     pub async fn status(&self, owner: &str) -> Value {
-        let bound = match self.slot(owner, false).await {
+        let (bound, control) = match self.slot(owner, false).await {
             Ok(slot) => {
-                slot.id.lock().ok().is_some_and(|id| id.is_some())
-                    && !slot.retired.load(Ordering::SeqCst)
+                let bound = slot.id.lock().ok().is_some_and(|id| id.is_some())
+                    && !slot.retired.load(Ordering::SeqCst);
+                let control = match slot.seat.receipt() {
+                    Ok(state) if bound => state["mode"].clone(),
+                    Ok(_) => Value::Null,
+                    Err(_) => json!("unavailable"),
+                };
+                (bound, control)
             }
-            Err(_) => false,
+            Err(_) => (false, Value::Null),
         };
-        json!({"available":!process::candidates().is_empty(),"bound":bound,"engine":"chromium-headless","version":1,
-            "session":"chat-owned-independent-profile","capabilities":{"open":true,"close":true,"observe":true,"dom_actions":true,"browser_input_actions":["click","move","key"],"native_input":true,"cross_origin_pointer":true,"screenshot":true,"hidden_tab_actions":true,"recording":false,"global_os_input":false,"cross_origin_frames":false,"javascript":true,"async_javascript":true,"console_capture":true},
-            "constraints":["new isolated Chrome/Edge instance; no existing login/profile inherited","one page per chat, at most four live chats; close releases its browser","sidebar is optional preview; it does not authorize or own the browser","DOM refs are one-shot; screenshot/input use CSS viewport coordinates"]})
+        json!({"available":!process::candidates().is_empty(),"bound":bound,"control":control,"engine":"chromium-headless","version":1,
+            "session":"chat-owned-independent-profile","capabilities":{"open":true,"close":true,"observe":true,"dom_actions":true,"browser_input_actions":["click","move","key"],"native_input":true,"cross_origin_pointer":true,"screenshot":true,"human_takeover":true,"hidden_tab_actions":true,"recording":false,"global_os_input":false,"cross_origin_frames":false,"javascript":true,"async_javascript":true,"console_capture":true},
+            "constraints":["new isolated Chrome/Edge instance; no existing login/profile inherited","one page per chat, at most four live chats; close releases its browser","sidebar is optional preview; it does not authorize or own the browser","DOM refs are one-shot; screenshot/input use CSS viewport coordinates","manual control pauses Agent calls; wait for explicit return, then observe again; never change engines to bypass it"]})
     }
     pub async fn close(&self, owner: &str) -> Result<Value, String> {
-        self.close_tab(owner, None).await
+        self.close_scoped(owner, None, None).await
     }
     pub async fn close_tab(&self, owner: &str, expected: Option<&str>) -> Result<Value, String> {
+        self.close_scoped(owner, expected, None).await
+    }
+    async fn close_scoped(
+        &self,
+        owner: &str,
+        expected: Option<&str>,
+        agent: Option<(Arc<Slot>, Ticket)>,
+    ) -> Result<Value, String> {
         let mut sessions = self.sessions.lock().await;
         if let Some(expected) = expected {
             let slot = sessions.get(owner).ok_or("browser already closed")?;
@@ -127,12 +161,28 @@ impl Browsers {
                 return Err("stale browser closure refused".into());
             }
         }
+        let target = sessions.get(owner);
+        let ticket = match agent {
+            Some((slot, ticket)) if target.is_some_and(|current| Arc::ptr_eq(current, &slot)) => {
+                Some(ticket)
+            }
+            Some(_) => return Ok(rejected("browser close target was replaced")),
+            None => None,
+        };
+        if let Some(slot) = target {
+            if let Err(reason) = slot.seat.retire(ticket) {
+                if ticket.is_some() {
+                    return Ok(rejected(&reason));
+                }
+                return Err(reason);
+            }
+            slot.retired.store(true, Ordering::SeqCst);
+        }
         let slot = sessions.remove(owner);
         drop(sessions);
         let Some(slot) = slot else {
             return Ok(json!({"ok":true,"effect":"applied","closed":true}));
         };
-        slot.retired.store(true, Ordering::SeqCst);
         let id = slot
             .id
             .lock()
@@ -162,40 +212,73 @@ impl Browsers {
                     .map_err(|_| "invalid browser control arguments")?;
             return match request {
                 crate::browser_lifecycle::ControlRequest::Status {} => Ok(self.status(owner).await),
-                crate::browser_lifecycle::ControlRequest::Close {} => self.close(owner).await,
+                crate::browser_lifecycle::ControlRequest::Close {} => {
+                    let slot = match self.slot(owner, false).await {
+                        Ok(slot) => slot,
+                        Err(reason) => return Ok(rejected(&reason)),
+                    };
+                    let ticket = slot.seat.snapshot()?;
+                    self.close_scoped(owner, None, Some((slot, ticket))).await
+                }
                 crate::browser_lifecycle::ControlRequest::Open { url } => {
-                    self.open(owner, url).await
+                    self.open(owner, url, false).await
                 }
             };
         }
         let slot = self.slot(owner, false).await?;
+        let ticket = slot.seat.snapshot()?;
+        if let Err(reason) = slot.seat.require(ticket, Driver::Agent) {
+            return Ok(rejected(&reason));
+        }
         let mut guard = slot.instance.lock().await;
         if slot.retired.load(Ordering::SeqCst) {
-            return Err("browser session was closed".into());
+            return Ok(rejected("browser session was closed"));
+        }
+        if let Err(reason) = slot.seat.require(ticket, Driver::Agent) {
+            return Ok(rejected(&reason));
         }
         let instance = guard.as_mut().ok_or("browser is not ready")?;
         instance.release_pending().await?;
+        let admit = || slot.admit(ticket);
         match operation {
-            "observe" => instance.observe(arguments).await,
+            "observe" => {
+                let value = instance.observe(arguments).await?;
+                slot.seat.confirm_observation(ticket)?;
+                Ok(value)
+            }
             "screenshot" => {
                 if arguments != json!({}) {
                     return Err("screenshot takes no arguments".into());
                 }
-                instance.screenshot().await
+                let value = instance.screenshot().await?;
+                slot.seat.confirm_observation(ticket)?;
+                Ok(value)
             }
-            "perform" => instance.perform(arguments).await,
-            "evaluate" => instance.evaluate(arguments).await,
-            "input" => instance.input(arguments).await,
+            "perform" => instance.perform(arguments, admit).await,
+            "evaluate" => instance.evaluate(arguments, admit).await,
+            "input" => instance.input(arguments, admit).await,
             _ => Err("unknown background browser operation".into()),
         }
     }
-    async fn open(&self, owner: &str, url: String) -> Result<Value, String> {
+    async fn open(&self, owner: &str, url: String, shell: bool) -> Result<Value, String> {
         let url = crate::browser::web_url(&url)?.to_string();
         let slot = self.slot(owner, true).await?;
         let _lease = OpenLease(slot.clone());
+        let ticket = slot.seat.snapshot()?;
+        if let Err(reason) = slot.seat.require(ticket, Driver::Agent) {
+            return Ok(rejected(&reason));
+        }
         let mut guard = slot.instance.lock().await;
         if slot.retired.load(Ordering::SeqCst) {
             return Err("browser open cancelled by closure".into());
+        }
+        if let Err(reason) = slot.seat.require(ticket, Driver::Agent) {
+            return Ok(rejected(&reason));
+        }
+        if shell && guard.is_some() {
+            return Ok(rejected(
+                "the chat already has a browser; use its preview to take control",
+            ));
         }
         if guard.is_none() {
             let mut selected = None;
@@ -221,8 +304,112 @@ impl Browsers {
         }
         let instance = guard.as_mut().ok_or("browser unavailable")?;
         instance.release_pending().await?;
-        instance.frame = None;
-        let receipt = instance
+        let effect = match slot.admit(ticket) {
+            Ok(effect) => effect,
+            Err(reason) => return Ok(rejected(&reason)),
+        };
+        let result = instance.navigate(url).await;
+        effect.resolve(result.is_ok());
+        if slot.retired.load(Ordering::SeqCst) {
+            return Err("browser closed during navigation; inspect before retrying".into());
+        }
+        result
+    }
+    /// Only an explicit visible-preview request captures JPEG; no hidden timer
+    /// exists in Rust. Skip a busy control operation rather than queue behind it.
+    pub async fn preview(&self, owner: &str, expected: &str) -> Result<Value, String> {
+        let slot = self.slot(owner, false).await?;
+        if slot.retired.load(Ordering::SeqCst)
+            || slot
+                .id
+                .lock()
+                .map_err(|_| "browser identity unavailable")?
+                .as_deref()
+                != Some(expected)
+        {
+            return Err("preview target closed".into());
+        }
+        let Ok(mut pending) = slot.preview.try_lock() else {
+            return Ok(json!({"busy":true}));
+        };
+        let ticket = slot.seat.snapshot()?;
+        let control = slot.seat.receipt()?;
+        if pending.is_none() {
+            if slot.seat.require(ticket, ticket.driver).is_err() {
+                return Ok(json!({"busy":true,"control":control}));
+            }
+            let Ok(guard) = slot.instance.try_lock() else {
+                return Ok(json!({"busy":true,"control":control}));
+            };
+            let instance = guard.as_ref().ok_or("preview target closed")?;
+            if instance.release.is_some() {
+                return Ok(json!({"busy":true,"control":control}));
+            }
+            let cdp = instance.process.preview_cdp.clone();
+            let id = instance.id.clone();
+            // No Agent frame is written by the JPEG connection. In Human mode
+            // only, snapshot the exact geometry for a separate one-shot frame.
+            *pending = Some(PreviewTask {
+                ticket,
+                task: tokio::spawn(async move {
+                    let mut cdp = cdp.lock().await;
+                    let before = if ticket.driver == Driver::Human {
+                        Some(geometry(&mut cdp).await?)
+                    } else {
+                        None
+                    };
+                    let image = preview_image(&mut cdp, &id).await?;
+                    let stamp = match before {
+                        Some(before) if geometry(&mut cdp).await? == before => Some(before),
+                        _ => None,
+                    };
+                    Ok((image, stamp))
+                }),
+            });
+        }
+        let job = pending.as_mut().ok_or("preview read unavailable")?;
+        let captured = job.ticket;
+        let result = match tokio::time::timeout(Duration::from_millis(350), &mut job.task).await {
+            Err(_) => return Ok(json!({"busy":true,"control":control})),
+            Ok(result) => result.map_err(|_| "preview read unavailable".to_owned()),
+        };
+        pending.take();
+        if slot.retired.load(Ordering::SeqCst) {
+            return Err("preview target closed".into());
+        }
+        if slot.seat.require(captured, captured.driver).is_err() {
+            return Ok(json!({"busy":true,"control":slot.seat.receipt()?}));
+        }
+        let (mut image, stamp) = result??;
+        if let Some(stamp) = stamp {
+            // Read the seat again after getting the frame lock, so a transition
+            // cannot leave an actionable old image under a newer generation.
+            let mut frame = slot
+                .manual_frame
+                .lock()
+                .map_err(|_| "preview frame unavailable")?;
+            if slot.seat.require(captured, Driver::Human).is_ok() {
+                let id = nonce()?;
+                image["manualFrame"] = json!(id);
+                *frame = Some(Frame {
+                    id,
+                    stamp,
+                    created: Instant::now(),
+                });
+            }
+        }
+        image["control"] = slot.seat.receipt()?;
+        if slot.seat.require(captured, captured.driver).is_err() {
+            return Ok(json!({"busy":true,"control":image["control"]}));
+        }
+        Ok(image)
+    }
+}
+
+impl Instance {
+    async fn navigate(&mut self, url: String) -> Result<Value, String> {
+        self.frame = None;
+        let receipt = self
             .process
             .cdp
             .call("Page.navigate", json!({"url":url}))
@@ -235,7 +422,7 @@ impl Browsers {
             loop {
                 // Page.navigate can acknowledge before the new document commits.
                 // A previously ready document must not satisfy this navigation.
-                let tree = instance
+                let tree = self
                     .process
                     .cdp
                     .call("Page.getFrameTree", json!({}))
@@ -248,7 +435,7 @@ impl Browsers {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 }
-                let result = instance
+                let result = self
                     .process
                     .cdp
                     .evaluate(
@@ -275,56 +462,9 @@ impl Browsers {
         let actual = state["url"].as_str().ok_or("missing browser URL")?;
         crate::browser::web_url(actual)?;
         Ok(
-            json!({"ok":true,"effect":"applied","state":"ready","tab_id":instance.id,"url":actual,"engine":"chromium-headless","preview_optional":true}),
+            json!({"ok":true,"effect":"applied","state":"ready","tab_id":self.id,"url":actual,"engine":"chromium-headless","preview_optional":true}),
         )
     }
-    /// Only an explicit visible-preview request captures JPEG; no hidden timer
-    /// exists in Rust. Skip a busy control operation rather than queue behind it.
-    pub async fn preview(&self, owner: &str, expected: &str) -> Result<Value, String> {
-        let slot = self.slot(owner, false).await?;
-        if slot.retired.load(Ordering::SeqCst)
-            || slot
-                .id
-                .lock()
-                .map_err(|_| "browser identity unavailable")?
-                .as_deref()
-                != Some(expected)
-        {
-            return Err("preview target closed".into());
-        }
-        let Ok(mut pending) = slot.preview.try_lock() else {
-            return Ok(json!({"busy":true}));
-        };
-        if pending.is_none() {
-            let Ok(guard) = slot.instance.try_lock() else {
-                return Ok(json!({"busy":true}));
-            };
-            let instance = guard.as_ref().ok_or("preview target closed")?;
-            if instance.release.is_some() {
-                return Ok(json!({"busy":true}));
-            }
-            let cdp = instance.process.preview_cdp.clone();
-            let id = instance.id.clone();
-            // The spawned read owns its connection until completion. Timing out
-            // only the caller's wait must not cancel an in-flight screenshot:
-            // Chrome can reset global emulation if that session disconnects.
-            *pending = Some(tokio::spawn(async move {
-                preview_image(&mut *cdp.lock().await, &id).await
-            }));
-        }
-        let task = pending.as_mut().ok_or("preview read unavailable")?;
-        let result = match tokio::time::timeout(Duration::from_millis(350), task).await {
-            Err(_) => return Ok(json!({"busy":true})),
-            Ok(result) => result.map_err(|_| "preview read unavailable".to_owned()),
-        };
-        pending.take();
-        if slot.retired.load(Ordering::SeqCst) {
-            return Err("preview target closed".into());
-        }
-        result?
-    }
-}
-impl Instance {
     async fn release_pending(&mut self) -> Result<(), String> {
         if let Some(params) = self.release.clone() {
             let method = if params["type"] == "keyUp" {
@@ -339,13 +479,7 @@ impl Instance {
     }
 
     async fn stamp(&mut self) -> Result<String, String> {
-        self.process
-            .cdp
-            .evaluate(GEOMETRY.into())
-            .await?
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| "browser geometry unavailable".into())
+        geometry(&mut self.process.cdp).await
     }
     async fn observe(&mut self, arguments: Value) -> Result<Value, String> {
         // Retry only an invalidated read, never an input or DOM effect. Async
@@ -403,7 +537,11 @@ impl Instance {
         }
         Ok(())
     }
-    async fn perform(&mut self, arguments: Value) -> Result<Value, String> {
+    async fn perform<'a>(
+        &mut self,
+        arguments: Value,
+        admit: impl FnOnce() -> Result<seat::Effect<'a>, String>,
+    ) -> Result<Value, String> {
         let request: crate::browser_perform::PerformRequest =
             serde_json::from_value(arguments.clone()).map_err(|_| "invalid browser DOM action")?;
         request.validate()?;
@@ -416,16 +554,22 @@ impl Instance {
             .map_err(|_| "clock unavailable")?
             .as_millis();
         args["deadline_epoch_ms"] = json!(now + 5000);
+        let effect = match admit() {
+            Ok(effect) => effect,
+            Err(reason) => return Ok(rejected(&reason)),
+        };
         let raw = self
             .process
             .cdp
             .evaluate(format!("({SCRIPT})({args})"))
             .await?;
-        serde_json::from_str(
+        let receipt: Value = serde_json::from_str(
             raw.as_str()
                 .ok_or("action result unavailable; effect unknown")?,
         )
-        .map_err(|_| "action result invalid; effect unknown".into())
+        .map_err(|_| "action result invalid; effect unknown")?;
+        effect.resolve(known_effect(&receipt));
+        Ok(receipt)
     }
     async fn screenshot(&mut self) -> Result<Value, String> {
         self.frame = None;
@@ -469,7 +613,11 @@ impl Instance {
             json!({"frame_id":id,"viewport":{"width":1280,"height":720},"image":{"width":1280,"height":720},"png_base64":data}),
         )
     }
-    async fn input(&mut self, arguments: Value) -> Result<Value, String> {
+    async fn input<'a>(
+        &mut self,
+        arguments: Value,
+        admit: impl FnOnce() -> Result<seat::Effect<'a>, String>,
+    ) -> Result<Value, String> {
         use crate::browser_native::InputRequest;
         let request: InputRequest =
             serde_json::from_value(arguments).map_err(|_| "invalid browser input")?;
@@ -477,12 +625,24 @@ impl Instance {
         if let Err(message) = self.consume(request.frame()).await {
             return Ok(rejected(&message));
         }
+        self.send_input(request, admit).await
+    }
+
+    async fn send_input<'a>(
+        &mut self,
+        request: crate::browser_native::InputRequest,
+        admit: impl FnOnce() -> Result<seat::Effect<'a>, String>,
+    ) -> Result<Value, String> {
+        use crate::browser_native::InputRequest;
+        if matches!(&request, InputRequest::Click { x, y, .. } | InputRequest::Move { x, y, .. } if *x >= 1280.0 || *y >= 720.0)
+        {
+            return Ok(rejected("point outside CSS viewport"));
+        }
+        let effect = match admit() {
+            Ok(effect) => effect,
+            Err(reason) => return Ok(rejected(&reason)),
+        };
         match request {
-            InputRequest::Click { x, y, .. } | InputRequest::Move { x, y, .. }
-                if x >= 1280.0 || y >= 720.0 =>
-            {
-                return Ok(rejected("point outside CSS viewport"))
-            }
             InputRequest::Move { x, y, .. } => {
                 self.process
                     .cdp
@@ -539,6 +699,7 @@ impl Instance {
                 self.release_pending().await?;
             }
         }
+        effect.resolve(true);
         Ok(json!({"ok":true,"effect":"applied"}))
     }
 }
@@ -552,6 +713,17 @@ pub async fn desktop_headless_preview(
 ) -> Result<Value, String> {
     crate::browser::ensure_main(&caller)?;
     state.preview(&owner, &tab_id).await
+}
+#[tauri::command]
+pub async fn desktop_headless_manual(
+    caller: tauri::Webview,
+    state: tauri::State<'_, Browsers>,
+    owner: String,
+    tab_id: String,
+    arguments: Value,
+) -> Result<Value, String> {
+    crate::browser::ensure_main(&caller)?;
+    state.manual(&owner, &tab_id, arguments).await
 }
 #[tauri::command]
 pub async fn desktop_headless_control(
@@ -577,7 +749,15 @@ pub async fn desktop_headless_control(
             )
             .await?
     } else {
-        state.dispatch(&owner, "control", arguments).await?
+        match serde_json::from_value(arguments).map_err(|_| "invalid browser control arguments")? {
+            crate::browser_lifecycle::ControlRequest::Open { url } => {
+                state.open(&owner, url, true).await?
+            }
+            crate::browser_lifecycle::ControlRequest::Status {} => state.status(&owner).await,
+            crate::browser_lifecycle::ControlRequest::Close {} => {
+                return Err("explicit close requires its exact tab".into())
+            }
+        }
     };
     if result["ok"] == true {
         let _ = app.emit_to(
@@ -589,6 +769,13 @@ pub async fn desktop_headless_control(
     Ok(result)
 }
 
+async fn geometry(cdp: &mut process::Cdp) -> Result<String, String> {
+    cdp.evaluate(GEOMETRY.into())
+        .await?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "browser geometry unavailable".into())
+}
 async fn preview_image(cdp: &mut process::Cdp, id: &str) -> Result<Value, String> {
     let metrics = cdp.call("Page.getLayoutMetrics", json!({})).await?;
     let viewport = &metrics["visualViewport"];

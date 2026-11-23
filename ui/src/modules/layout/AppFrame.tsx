@@ -22,7 +22,7 @@ import {xhLoadBrowserSpaces,xhSaveBrowserSpaces,xhNextWorkspaceId,xhWorkspaceEmp
 import {workspaceDockEvents} from '../shared/workspace-dock'
 import type {BrowserSpaces,WorkspaceItem,WorkspaceSpace,WorkspaceOpenDetail} from './workspace-pane'
 import type {BrowserPatch} from '../browser/index'
-import {listenModelBrowser} from '../browser/model-control'
+import {listenOwnedBrowser,type OwnedBrowserPage} from '../browser/model-control'
 import {objectValue} from '../shared/runtime-types'
 import type { ShellNavigation } from './shell-navigation'
 const xhWorkspaceWindow=xhCreateBrowserWindowController(typeof window==='undefined'?undefined:window.__TAURI__)
@@ -131,31 +131,6 @@ export function AppFrame({
   const space=spaces[spaceKey]??xhWorkspaceEmpty
   const nextWorkspaceId=useRef(xhNextWorkspaceId(spaces))
   useEffect(()=>{
-    const native=window.__TAURI__;if(!native)return
-    let disposed=false,stop:(()=>void)|undefined
-    native.event.listen('xharness-headless-page',event=>{
-      if(disposed)return
-      const payload=objectValue(event.payload)
-      if(typeof payload.owner!=='string'||!payload.owner||payload.owner.length>128)return
-      const owner=payload.owner
-      if(payload.closed===true){
-        setSpaces(all=>{const space=all[owner];if(!space)return all;const items=space.items.filter(item=>item.id!==payload.tabId);return{...all,[owner]:{...space,items,activeId:items.some(item=>item.id===space.activeId)?space.activeId:items[0]?.id??null}}});return
-      }
-      if(typeof payload.tabId!=='string'||!/^headless:[0-9a-f]{32}$/.test(payload.tabId)||typeof payload.url!=='string')return
-      const id=payload.tabId,url=payload.url
-      try{const parsed=new URL(url);if(!['http:','https:'].includes(parsed.protocol)||parsed.username||parsed.password)return}catch{return}
-      setSpaces(all=>{
-        const space=all[owner]??xhWorkspaceEmpty
-        const existing=space.items.find(item=>item.id===id)
-        const item:WorkspaceItem={id,kind:'browser',source:'browser',title:new URL(url).hostname,entries:[...(existing?.entries??[]).slice(-49),url],position:Math.min(existing?.entries.length??0,49)}
-        const items=space.items.filter(item=>!item.id.startsWith('headless:')&&!(item.id===space.activeId&&item.kind==='browser'&&item.entries.length===0))
-        // Background chats are updated without selecting them or stealing focus.
-        return{...all,[owner]:{items:[...items,item],activeId:id,collapsed:existing!==undefined?space.collapsed===true:owner!==spaceKeyRef.current}}
-      })
-    }).then(unlisten=>{if(disposed)unlisten();else stop=unlisten}).catch(()=>{})
-    return()=>{disposed=true;stop?.()}
-  },[])
-  useEffect(()=>{
     if(browserRestored)xhSaveBrowserSpaces(spaces)
     nextWorkspaceId.current=Math.max(nextWorkspaceId.current,xhNextWorkspaceId(spaces))
   },[spaces,browserRestored])
@@ -168,37 +143,37 @@ export function AppFrame({
     }).catch(()=>{}).finally(()=>{if(alive)setBrowserRestored(true)})
     return()=>{alive=false}
   },[])
+  const pendingOwnedPages=useRef(new Map<string,OwnedBrowserPage>())
+  const acceptOwnedPage=(page:OwnedBrowserPage)=>{
+    setSpaces(all=>{
+      const space=all[page.owner]??xhWorkspaceEmpty
+      if(page.closed)return{...all,[page.owner]:xhWorkspaceClose(space,page.tabId)}
+      const url=page.url;if(!url)return all
+      const existing=space.items.find(item=>item.id===page.tabId)
+      if(existing?.entries[existing.position]===url)return all
+      const entries=[...(existing?.entries??[]).slice(-49),url]
+      const item:WorkspaceItem={id:page.tabId,kind:'browser',source:'browser',title:new URL(url).hostname,entries,position:entries.length-1}
+      if(existing)return{...all,[page.owner]:{...space,items:space.items.map(value=>value.id===page.tabId?item:value)}}
+      const blank=space.items.find(value=>value.id===space.activeId&&value.kind==='browser'&&value.entries.length===0)
+      const replaced=space.items.find(value=>page.backend==='browser'&&value.id.startsWith('headless:'))
+      const replace=blank??replaced
+      const items=[...space.items.filter(value=>value.id!==replace?.id&&!(page.backend==='browser'&&value.id.startsWith('headless:'))),item]
+      const selected=items.some(value=>value.id===space.activeId)?space.activeId:page.tabId
+      return{...all,[page.owner]:{items,activeId:selected,collapsed:space.collapsed??page.owner!==spaceKeyRef.current}}
+    })
+  }
   useEffect(()=>{
-    const native=window.__TAURI__
-    if(!native?.core?.invoke||!native.event?.listen)return
-    return listenModelBrowser(native,{
-      currentOwner:()=>spaceKeyRef.current,
-      ready:()=>restoredRef.current,
-      open:request=>{
-        const item:WorkspaceItem={id:`browser:${request.requestId}`,kind:'browser',source:'browser',
-          modelRequestId:request.requestId,title:new URL(request.url).hostname,entries:[request.url],position:0}
-        setSpaces(all=>({...all,[request.owner]:xhWorkspaceOpen(all[request.owner]??xhWorkspaceEmpty,item,false)}))
-      },
-      close:async request=>{
-        const current=spacesRef.current[request.owner]
-        if(spaceKeyRef.current!==request.owner||current?.activeId!==request.tabId
-          ||!current.items.some(item=>item.id===request.tabId&&item.kind==='browser'))return false
-        // Remove presentation first so pending layout work observes unmount.
-        // Destruction must bypass the navigation queue, which may be awaiting
-        // a slow page callback. Exact owner+ID prevents closing its successor.
-        window.dispatchEvent(new CustomEvent('xharness:browser-closing',{detail:{id:request.tabId}}))
-        setSpaces(all=>({...all,[request.owner]:xhWorkspaceClose(all[request.owner]??xhWorkspaceEmpty,request.tabId)}))
-        await native.core.invoke('desktop_browser_close',{tabId:request.tabId})
-        return true
-      },
-      cancel:requestId=>{
-        window.dispatchEvent(new CustomEvent('xharness:browser-closing',{detail:{id:`browser:${requestId}`}}))
-        setSpaces(all=>Object.fromEntries(Object.entries(all).map(([owner,space])=>[owner,
-          space.items.some(item=>item.modelRequestId===requestId)?xhWorkspaceClose(space,`browser:${requestId}`):space])))
-        void native.core.invoke('desktop_browser_close',{tabId:`browser:${requestId}`}).catch(()=>{})
-      },
+    const native=window.__TAURI__;if(!native?.core?.invoke||!native.event?.listen)return
+    return listenOwnedBrowser(native,page=>{
+      if(!restoredRef.current){pendingOwnedPages.current.set(page.tabId,page);if(pendingOwnedPages.current.size>128){const oldest=pendingOwnedPages.current.keys().next().value;if(oldest)pendingOwnedPages.current.delete(oldest);console.error("Browser presentation queue capacity reached")}return}
+      acceptOwnedPage(page)
     })
   },[])
+  useEffect(()=>{
+    if(!browserRestored)return
+    const pending=[...pendingOwnedPages.current.values()];pendingOwnedPages.current.clear()
+    for(const page of pending)acceptOwnedPage(page)
+  },[browserRestored])
   const [workspaceWidth,setWorkspaceWidth]=useState(440)
   const updateSpace=(fn:(space:WorkspaceSpace)=>WorkspaceSpace):void=>setSpaces(all=>{
     const key=spaceKeyRef.current
@@ -212,10 +187,25 @@ export function AppFrame({
     const key=detail.sessionId??spaceKeyRef.current
     setSpaces(all=>({...all,[key]:xhWorkspaceOpen(all[key]??xhWorkspaceEmpty,item,!fresh)}))
   }
+  const closingHeadless=useRef(new Set<string>())
+  const [browserCloseError,setBrowserCloseError]=useState<{owner:string;message:string}>()
   const closeWorkspace=(id:string|null):void=>{
     const panel=space.items.find(item=>item.id===id&&item.kind==='plugin')
     if(panel){window.dispatchEvent(new CustomEvent('xharness:plugin-panel-close-request',{detail:{capability:panel.source}}));return}
 
+    if(id?.startsWith('headless:')&&space.items.some(item=>item.id===id)){
+      const native=window.__TAURI__,owner=spaceKeyRef.current
+      if(!native?.core?.invoke||closingHeadless.current.has(id))return
+      closingHeadless.current.add(id)
+      setBrowserCloseError(undefined)
+      // Do not hide a still-running manual session on an uncertain close.
+      void native.core.invoke('desktop_headless_control',{owner,tabId:id,arguments:{action:'close'}}).then(raw=>{
+        const receipt=objectValue(raw)
+        if(receipt.ok!==true||receipt.closed!==true||receipt.tab_id!==id)throw Error('浏览器未确认已关闭')
+        setSpaces(all=>all[owner]?{...all,[owner]:xhWorkspaceClose(all[owner],id)}:all)
+      }).catch(()=>setBrowserCloseError({owner,message:'未确认浏览器已关闭，保留当前标签。'})).finally(()=>closingHeadless.current.delete(id))
+      return
+    }
     if(id==='tool')actions.closeDetails()
     if(space.items.some(item=>item.id===id&&item.kind==='browser')){
       window.dispatchEvent(new CustomEvent('xharness:browser-closing',{detail:{id}}))
@@ -386,7 +376,7 @@ export function AppFrame({
         {centerPage === 'work' && <WorkCenter close={closeCenterPage} renderTasks={() => renderSlot('work.center.tasks', {openSession: openWorkSession})} renderAutomations={() => renderSlot('work.center.automations', {openSession: openWorkSession})} renderExecutions={()=>renderSlot('work.center.executions',{openSession:openWorkSession})}/>}
         </div></CenterColumn>
         {workspaceDrawer&&<button type="button" className={css.workspaceScrim} aria-label="关闭工作区" onClick={()=>updateSpace(value=>({...value,collapsed:true}))} />}
-        <DetailsColumn><XhWorkspacePane space={space} spaces={spaces} open={workspaceOpen} sessionId={spaceKey==='__global__'?null:spaceKey} renderSlot={renderSlot} onSelect={id=>updateSpace(value=>({...value,activeId:id}))} onClose={closeWorkspace} onUpdate={updateItem} onUpdateOwner={(owner,id,patch)=>setSpaces(all=>{
+        <DetailsColumn>{browserCloseError?.owner===spaceKey&&<p role="alert">{browserCloseError.message}</p>}<XhWorkspacePane space={space} spaces={spaces} open={workspaceOpen} sessionId={spaceKey==='__global__'?null:spaceKey} renderSlot={renderSlot} onSelect={id=>updateSpace(value=>({...value,activeId:id}))} onClose={closeWorkspace} onUpdate={updateItem} onUpdateOwner={(owner,id,patch)=>setSpaces(all=>{
           const prior=all[owner]
           if(!prior?.items.some(item=>item.id===id))return all
           return {...all,[owner]:{...prior,items:prior.items.map(item=>item.id===id?{...item,...patch}:item)}}
