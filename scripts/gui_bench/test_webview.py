@@ -563,6 +563,49 @@ class WebviewTests(unittest.TestCase):
         self.assertLessEqual(calls.count('perform'), 11)
         self.assertEqual((contract.actions, contract.denials), ([], []))
 
+    def test_contract_event_inside_a_read_repeats_only_the_observation(self):
+        calls = []
+        def call(op, arguments):
+            calls.append(op)
+            if op == 'observe':
+                # A navigation policy event or layout re-apply landed inside the native read.
+                if calls.count('observe') == 1: raise RuntimeError('browser binding changed')
+                return {'source':{'engine':'tauri-webview'},'frame_id':'fresh',
+                    'nodes':[{'label':'Target','ref':'n9','disabled':False}]}
+            return ({'ok':True,'effect':'applied','frame_id':arguments['frame_id']} if calls.count('perform') == 1
+                    else {'ok':False,'effect':'not_started','message':'consumed'})
+        with patch('scripts.gui_bench.webview_contract.time.sleep'):
+            contract = Contract(call); contract.act('click','Target')
+        self.assertEqual(calls,['observe','observe','perform','perform'])
+        self.assertEqual(contract.readiness_denials,['browser binding changed'])
+        self.assertEqual((contract.actions, contract.superseded_frames),([dict(action='click',label='Target')],[]))
+
+    def test_contract_event_inside_an_action_is_reobserved_from_a_not_started_receipt(self):
+        calls = []
+        def call(op, arguments):
+            calls.append(op)
+            if op == 'observe':
+                return {'source':{'engine':'tauri-webview'},'frame_id':'fresh',
+                    'nodes':[{'label':'Target','ref':'n9','disabled':False}]}
+            performed = calls.count('perform')
+            if performed == 1: return {'ok':False,'effect':'not_started','message':'browser binding changed'}
+            if performed == 2: return {'ok':True,'effect':'applied','frame_id':arguments['frame_id']}
+            return {'ok':False,'effect':'not_started','message':'consumed'}
+        with patch('scripts.gui_bench.webview_contract.time.sleep'):
+            contract = Contract(call); contract.act('click','Target')
+        self.assertEqual(calls,['observe','perform','observe','perform','perform'])
+        self.assertEqual(contract.superseded_frames,[dict(action='click',label='Target',message='browser binding changed')])
+        self.assertEqual(contract.actions,[dict(action='click',label='Target')])
+
+    def test_contract_permanent_read_faults_are_raised_at_once(self):
+        # Only a refusal a later read resolves is repeated; anything else is a defect to show.
+        for message in ['native observation is too large','invalid native observation arguments',
+                        'browser tab is not open','guest caller was authorized']:
+            call = Mock(side_effect=RuntimeError(message))
+            with self.subTest(message=message), self.assertRaises(RuntimeError):
+                Contract(call).observe()
+            self.assertEqual(call.call_count, 1)
+
     def test_contract_unknown_effect_is_never_replayed(self):
         calls = []
         def call(op, arguments):
