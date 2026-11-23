@@ -105,6 +105,11 @@ try {
     assert.ok(layout.stats.y>=layout.card.y+layout.card.height-1,JSON.stringify(layout))
     assert.ok(layout.stats.x>=0&&layout.stats.x+layout.stats.width<=width+1,JSON.stringify(layout))
     assert.ok(layout.stats.height<=62,JSON.stringify(layout))
+    // The readout spans exactly the card and never wraps mid-metric: narrow
+    // widths scroll a row under an edge fade instead of reflowing it.
+    const rows=await page.evaluate(()=>[...document.querySelectorAll('[data-composer-stats] > div > div')].map(el=>{const {x,width,height}=el.getBoundingClientRect();return {x,width,height}}))
+    assert.ok(Math.abs(layout.stats.x-layout.card.x)<=1&&Math.abs(layout.stats.x+layout.stats.width-(layout.card.x+layout.card.width))<=1,JSON.stringify(layout.stats))
+    assert.ok(rows.length===2&&rows.every(row=>row.height<=19&&row.x>=layout.card.x&&row.x+row.width<=layout.card.x+layout.card.width+1),JSON.stringify(rows))
     assert.ok(layout.card.x>=0&&layout.card.x+layout.card.width<=width,JSON.stringify(layout))
     assert.ok(layout.actions.width<=280&&layout.actions.height<=36,JSON.stringify(layout))
     for(const control of [...layout.model,...layout.buttons]) {
@@ -262,12 +267,14 @@ try {
   await input.fill('')
   assert.equal(await primary().count(),1)
   assert.equal(await page.getByRole('button',{name:'Send message',exact:true}).isDisabled(),true)
-  // Stats ride a persistent always-on strip under the composer buttons.
+  // Stats ride a persistent readout under the composer: a muted label and a
+  // brighter value per metric, live metrics leading, session totals after.
   assert.equal(await page.locator('[data-composer-stats] > button').count(),0,'no disclosure button remains')
   const strip=page.locator('[data-composer-stats] > div')
   await strip.waitFor()
-  assert.match(await strip.innerText(),/Cache hit/)
-  assert.match(await strip.innerText(),/Input.*Output/)
+  assert.deepEqual(await strip.evaluate(el=>[...el.children].map(row=>[...row.children].map(metric=>metric.textContent))),
+    [['TTFT40.6s','Speed44tok/s','Cache99%','In6175M','Out18M'],['LLM2903m12s','Tools526m2s','Turns185','Steps2446']])
+  assert.equal(await strip.locator('[title]').count(),9,'every metric explains itself on hover')
   const statsBox=await strip.boundingBox()
   assert.ok(statsBox.x>=0&&statsBox.y>=0,JSON.stringify(statsBox))
   assert.ok(statsBox.width<=page.viewportSize().width,JSON.stringify(statsBox))
