@@ -102,7 +102,6 @@ try {
   await page.waitForFunction(()=>saved.model==='unknown'&&saved.contextWindowTokens===65536);
  }
  await closeAll();await openMenu();await page.getByRole('menuitem',{name:/^模型/}).click();
- if(process.env.UI_TEST_IMPL !== 'legacy')await page.getByRole('menuitem',{name:'menu.custom',exact:true}).click();
  await page.getByRole('menuitemradio',{name:'Small',exact:true}).click();
  await page.waitForFunction(()=>saved.model==='small');assert.equal(await page.evaluate(()=>saved.contextWindowTokens),undefined,'new model must not inherit old soft context');
  await openContext();assert.equal(await page.getByRole('textbox').inputValue(),'32768');await closeAll();

@@ -21,7 +21,6 @@
  * levels instead.
  */
 
-import { isManagedModelProvider } from '../shared/managed-models'
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import type { IApiClient } from './contracts'
@@ -98,8 +97,7 @@ export function CustomProviderCard(props: CustomProviderCardProps): ReactNode {
   const profileDisabled = disabled || committed
 
   const routeInvalid = route.length > 0 && !ROUTE_PATTERN.test(route)
-  // Keep the account-owned route out of the BYOK creation flow, even before login.
-  const routeTaken = isManagedModelProvider(route) || taken.includes(route)
+  const routeTaken = taken.includes(route)
   // Rows are checked by the same per-row validator the editor cards use, so a
   // bad row is named by its position here too. Capacities have route-level
   // fallbacks; what a route cannot default is at least one model.

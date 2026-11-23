@@ -12,6 +12,7 @@ export function assertProductionSources(sources) {
   for (const source of sources) {
     if (isFixtureSource(source)) throw Error(`Fixture/demo input is forbidden in production: ${source}`)
     if (source.startsWith('src/modules/code-review/')) throw Error(`Retired Code Review input is forbidden in production: ${source}`)
+    if (source.startsWith('src/modules/assistant/')) throw Error(`Retired Little X input is forbidden in production: ${source}`)
   }
 }
 export function moduleRowsForVariant(rows, variant) {

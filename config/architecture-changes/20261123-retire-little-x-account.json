@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "kind": "bugfix",
+  "reason": "Retire the desktop account sign-in bridge and its obsolete deep-link scheme together with the account UI; legacy credentials must not be activated by the updated Host.",
+  "compatibility": "Only the retired account callback command family and its dependency are removed. Keep the macOS/Windows/Linux application identity, Windows current-user installer, updater trust, single-instance behavior, other main-window capabilities, authenticated Host/CI RPC and persisted settings and chat histories. Existing application credentials and GitHub integrations remain separate. Replace the retired positive CI checks with no-login and no-IPC regressions.",
+  "paths": {
+    ".github/workflows/ci.yml": {
+      "before": "b4dd5fb100dd47b32049656e8ec69d3c85f7fec2d720adf5af300413887769c5",
+      "after": "9e1b8cfceb5a5c49f0a770667be0ec47cc44b7ac3fef5f7d2adcf72661e3b4f4"
+    },
+    "apps/desktop/src-tauri/Cargo.toml": {
+      "before": "75a0bccfd9ec92f48002528187cdea006960b613eb824872a63eb5a4e9d6deb6",
+      "after": "8d3700e8356291560a6f1b2469b0995b9e97064381a11f95ccd0ccd044e96795"
+    },
+    "apps/desktop/src-tauri/tauri.conf.json": {
+      "before": "06cdc27ef3ebfb71c7c49880fd5f3d160c73297dd5d1df3c2c6287bf93d9e951",
+      "after": "dd87dfbabae02e17a72c966846ea87013b33d0e6d408aee196d20ef8cecddd08"
+    }
+  },
+  "regressions": [
+    "architecture",
+    "native",
+    "updater",
+    "windows"
+  ]
+}
