@@ -80,6 +80,22 @@ impl NativeBrowser {
         matches!(self.transport, Transport::Desktop { .. })
     }
 
+    pub(crate) async fn debug(
+        &self,
+        owner: &str,
+        arguments: Value,
+        cancelled: &CancellationToken,
+    ) -> Result<Value, String> {
+        let Transport::Local(browsers) = &self.transport else {
+            return Err("browser_debug is available only in a standalone Host".into());
+        };
+        tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => Err("browser debug call cancelled".into()),
+            result = browsers.debug(owner, arguments) => result,
+        }
+    }
+
     pub(crate) async fn release_local(&self, owner: &str) -> Result<(), String> {
         if let Transport::Local(browsers) = &self.transport {
             self.images.lock().await.forget(true, owner);
