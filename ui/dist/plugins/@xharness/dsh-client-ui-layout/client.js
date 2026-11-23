@@ -195,48 +195,6 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
     const space = spaces[spaceKey] ?? workspace_pane_1.xhWorkspaceEmpty;
     const nextWorkspaceId = (0, react_1.useRef)((0, workspace_pane_1.xhNextWorkspaceId)(spaces));
     (0, react_1.useEffect)(() => {
-        const native = window.__TAURI__;
-        if (!native)
-            return;
-        let disposed = false, stop;
-        native.event.listen('xharness-headless-page', event => {
-            if (disposed)
-                return;
-            const payload = (0, runtime_types_1.objectValue)(event.payload);
-            if (typeof payload.owner !== 'string' || !payload.owner || payload.owner.length > 128)
-                return;
-            const owner = payload.owner;
-            if (payload.closed === true) {
-                setSpaces(all => { const space = all[owner]; if (!space)
-                    return all; const items = space.items.filter(item => item.id !== payload.tabId); return { ...all, [owner]: { ...space, items, activeId: items.some(item => item.id === space.activeId) ? space.activeId : items[0]?.id ?? null } }; });
-                return;
-            }
-            if (typeof payload.tabId !== 'string' || !/^headless:[0-9a-f]{32}$/.test(payload.tabId) || typeof payload.url !== 'string')
-                return;
-            const id = payload.tabId, url = payload.url;
-            try {
-                const parsed = new URL(url);
-                if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
-                    return;
-            }
-            catch {
-                return;
-            }
-            setSpaces(all => {
-                const space = all[owner] ?? workspace_pane_1.xhWorkspaceEmpty;
-                const existing = space.items.find(item => item.id === id);
-                const item = { id, kind: 'browser', source: 'browser', title: new URL(url).hostname, entries: [...(existing?.entries ?? []).slice(-49), url], position: Math.min(existing?.entries.length ?? 0, 49) };
-                const items = space.items.filter(item => !item.id.startsWith('headless:') && !(item.id === space.activeId && item.kind === 'browser' && item.entries.length === 0));
-                // Background chats are updated without selecting them or stealing focus.
-                return { ...all, [owner]: { items: [...items, item], activeId: id, collapsed: existing !== undefined ? space.collapsed === true : owner !== spaceKeyRef.current } };
-            });
-        }).then(unlisten => { if (disposed)
-            unlisten();
-        else
-            stop = unlisten; }).catch(() => { });
-        return () => { disposed = true; stop?.(); };
-    }, []);
-    (0, react_1.useEffect)(() => {
         if (browserRestored)
             (0, workspace_pane_1.xhSaveBrowserSpaces)(spaces);
         nextWorkspaceId.current = Math.max(nextWorkspaceId.current, (0, workspace_pane_1.xhNextWorkspaceId)(spaces));
@@ -253,39 +211,56 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
             setBrowserRestored(true); });
         return () => { alive = false; };
     }, []);
+    const pendingOwnedPages = (0, react_1.useRef)(new Map());
+    const acceptOwnedPage = (page) => {
+        setSpaces(all => {
+            const space = all[page.owner] ?? workspace_pane_1.xhWorkspaceEmpty;
+            if (page.closed)
+                return { ...all, [page.owner]: (0, workspace_pane_1.xhWorkspaceClose)(space, page.tabId) };
+            const url = page.url;
+            if (!url)
+                return all;
+            const existing = space.items.find(item => item.id === page.tabId);
+            if (existing?.entries[existing.position] === url)
+                return all;
+            const entries = [...(existing?.entries ?? []).slice(-49), url];
+            const item = { id: page.tabId, kind: 'browser', source: 'browser', title: new URL(url).hostname, entries, position: entries.length - 1 };
+            if (existing)
+                return { ...all, [page.owner]: { ...space, items: space.items.map(value => value.id === page.tabId ? item : value) } };
+            const blank = space.items.find(value => value.id === space.activeId && value.kind === 'browser' && value.entries.length === 0);
+            const replaced = space.items.find(value => page.backend === 'browser' && value.id.startsWith('headless:'));
+            const replace = blank ?? replaced;
+            const items = [...space.items.filter(value => value.id !== replace?.id && !(page.backend === 'browser' && value.id.startsWith('headless:'))), item];
+            const selected = items.some(value => value.id === space.activeId) ? space.activeId : page.tabId;
+            return { ...all, [page.owner]: { items, activeId: selected, collapsed: space.collapsed ?? page.owner !== spaceKeyRef.current } };
+        });
+    };
     (0, react_1.useEffect)(() => {
         const native = window.__TAURI__;
         if (!native?.core?.invoke || !native.event?.listen)
             return;
-        return (0, model_control_1.listenModelBrowser)(native, {
-            currentOwner: () => spaceKeyRef.current,
-            ready: () => restoredRef.current,
-            open: request => {
-                const item = { id: `browser:${request.requestId}`, kind: 'browser', source: 'browser',
-                    modelRequestId: request.requestId, title: new URL(request.url).hostname, entries: [request.url], position: 0 };
-                setSpaces(all => ({ ...all, [request.owner]: (0, workspace_pane_1.xhWorkspaceOpen)(all[request.owner] ?? workspace_pane_1.xhWorkspaceEmpty, item, false) }));
-            },
-            close: async (request) => {
-                const current = spacesRef.current[request.owner];
-                if (spaceKeyRef.current !== request.owner || current?.activeId !== request.tabId
-                    || !current.items.some(item => item.id === request.tabId && item.kind === 'browser'))
-                    return false;
-                // Remove presentation first so pending layout work observes unmount.
-                // Destruction must bypass the navigation queue, which may be awaiting
-                // a slow page callback. Exact owner+ID prevents closing its successor.
-                window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id: request.tabId } }));
-                setSpaces(all => ({ ...all, [request.owner]: (0, workspace_pane_1.xhWorkspaceClose)(all[request.owner] ?? workspace_pane_1.xhWorkspaceEmpty, request.tabId) }));
-                await native.core.invoke('desktop_browser_close', { tabId: request.tabId });
-                return true;
-            },
-            cancel: requestId => {
-                window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id: `browser:${requestId}` } }));
-                setSpaces(all => Object.fromEntries(Object.entries(all).map(([owner, space]) => [owner,
-                    space.items.some(item => item.modelRequestId === requestId) ? (0, workspace_pane_1.xhWorkspaceClose)(space, `browser:${requestId}`) : space])));
-                void native.core.invoke('desktop_browser_close', { tabId: `browser:${requestId}` }).catch(() => { });
-            },
+        return (0, model_control_1.listenOwnedBrowser)(native, page => {
+            if (!restoredRef.current) {
+                pendingOwnedPages.current.set(page.tabId, page);
+                if (pendingOwnedPages.current.size > 128) {
+                    const oldest = pendingOwnedPages.current.keys().next().value;
+                    if (oldest)
+                        pendingOwnedPages.current.delete(oldest);
+                    console.error("Browser presentation queue capacity reached");
+                }
+                return;
+            }
+            acceptOwnedPage(page);
         });
     }, []);
+    (0, react_1.useEffect)(() => {
+        if (!browserRestored)
+            return;
+        const pending = [...pendingOwnedPages.current.values()];
+        pendingOwnedPages.current.clear();
+        for (const page of pending)
+            acceptOwnedPage(page);
+    }, [browserRestored]);
     const [workspaceWidth, setWorkspaceWidth] = (0, react_1.useState)(440);
     const updateSpace = (fn) => setSpaces(all => {
         const key = spaceKeyRef.current;
@@ -300,10 +275,27 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
         const key = detail.sessionId ?? spaceKeyRef.current;
         setSpaces(all => ({ ...all, [key]: (0, workspace_pane_1.xhWorkspaceOpen)(all[key] ?? workspace_pane_1.xhWorkspaceEmpty, item, !fresh) }));
     };
+    const closingHeadless = (0, react_1.useRef)(new Set());
+    const [browserCloseError, setBrowserCloseError] = (0, react_1.useState)();
     const closeWorkspace = (id) => {
         const panel = space.items.find(item => item.id === id && item.kind === 'plugin');
         if (panel) {
             window.dispatchEvent(new CustomEvent('xharness:plugin-panel-close-request', { detail: { capability: panel.source } }));
+            return;
+        }
+        if (id?.startsWith('headless:') && space.items.some(item => item.id === id)) {
+            const native = window.__TAURI__, owner = spaceKeyRef.current;
+            if (!native?.core?.invoke || closingHeadless.current.has(id))
+                return;
+            closingHeadless.current.add(id);
+            setBrowserCloseError(undefined);
+            // Do not hide a still-running manual session on an uncertain close.
+            void native.core.invoke('desktop_headless_control', { owner, tabId: id, arguments: { action: 'close' } }).then(raw => {
+                const receipt = (0, runtime_types_1.objectValue)(raw);
+                if (receipt.ok !== true || receipt.closed !== true || receipt.tab_id !== id)
+                    throw Error('浏览器未确认已关闭');
+                setSpaces(all => all[owner] ? { ...all, [owner]: (0, workspace_pane_1.xhWorkspaceClose)(all[owner], id) } : all);
+            }).catch(() => setBrowserCloseError({ owner, message: '未确认浏览器已关闭，保留当前标签。' })).finally(() => closingHeadless.current.delete(id));
             return;
         }
         if (id === 'tool')
@@ -449,12 +441,12 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
                         collapsed: sidebarCollapsed,
                         width: sidebarContentWidth,
                         navigation,
-                    }) }) }), (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(CenterColumn, { swarm: centerPage === 'swarm', children: (0, jsx_runtime_1.jsxs)("div", { className: "xhfeature-shell", "data-swarm-active": centerPage === 'swarm' || undefined, children: [(0, jsx_runtime_1.jsx)("div", { className: "xhswarm-seat", hidden: centerPage !== 'swarm', children: centerPage === 'swarm' && renderSlot('swarm.center', { showConversation: setSwarmVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhassistant-seat", hidden: centerPage !== 'assistant', children: centerPage === 'assistant' && renderSlot('assistant.center', { showConversation: setAssistantVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhwork-conversation", hidden: centerPage !== 'chat' && !(centerPage === 'assistant' && assistantVisible) && !(centerPage === 'swarm' && swarmVisible), "aria-label": centerPage === 'assistant' ? 'Little X chat' : undefined, children: renderSlot('conversation', {}) }), centerPage === 'plugins' && (0, jsx_runtime_1.jsxs)("main", { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px clamp(20px, 5vw, 56px)' }, children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", style: { cursor: 'pointer', background: 'none', border: 0, color: 'var(--dsw-alias-label-secondary)', padding: '0 0 24px', font: 'inherit' }, "aria-label": "Back to chat", onClick: closeCenterPage, children: ["\u2190 ", navigator.language.startsWith('zh') ? '返回对话' : 'Back to chat'] }), renderSlot('plugins.center', {})] }), centerPage === 'work' && (0, jsx_runtime_1.jsx)(WorkCenter_1.WorkCenter, { close: closeCenterPage, renderTasks: () => renderSlot('work.center.tasks', { openSession: openWorkSession }), renderAutomations: () => renderSlot('work.center.automations', { openSession: openWorkSession }), renderExecutions: () => renderSlot('work.center.executions', { openSession: openWorkSession }) })] }) }), workspaceDrawer && (0, jsx_runtime_1.jsx)("button", { type: "button", className: AppFrame_styles_1.default.workspaceScrim, "aria-label": "\u5173\u95ED\u5DE5\u4F5C\u533A", onClick: () => updateSpace(value => ({ ...value, collapsed: true })) }), (0, jsx_runtime_1.jsx)(DetailsColumn, { children: (0, jsx_runtime_1.jsx)(workspace_pane_1.XhWorkspacePane, { space: space, spaces: spaces, open: workspaceOpen, sessionId: spaceKey === '__global__' ? null : spaceKey, renderSlot: renderSlot, onSelect: id => updateSpace(value => ({ ...value, activeId: id })), onClose: closeWorkspace, onUpdate: updateItem, onUpdateOwner: (owner, id, patch) => setSpaces(all => {
-                                const prior = all[owner];
-                                if (!prior?.items.some(item => item.id === id))
-                                    return all;
-                                return { ...all, [owner]: { ...prior, items: prior.items.map(item => item.id === id ? { ...item, ...patch } : item) } };
-                            }), onNewBrowser: () => openWorkspace('browser', true) }) })] }), (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.overlayLayer, "data-shell-overlay": true, children: renderSlot('shell.overlay', {}) }), !sidebarCollapsed && !sidebarDrawer && (0, jsx_runtime_1.jsx)(DragHandle, { side: "sidebar", left: cols.sidebar, onStart: onSidebarStart, onDrag: onSidebarDrag, onEnd: onDragEnd }), workspaceDockWidth > 0 && (0, jsx_runtime_1.jsx)(DragHandle, { side: "details", left: viewport - workspaceDockWidth, onStart: onWorkspaceStart, onDrag: onWorkspaceDrag, onEnd: onDragEnd })] }));
+                    }) }) }), (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(CenterColumn, { swarm: centerPage === 'swarm', children: (0, jsx_runtime_1.jsxs)("div", { className: "xhfeature-shell", "data-swarm-active": centerPage === 'swarm' || undefined, children: [(0, jsx_runtime_1.jsx)("div", { className: "xhswarm-seat", hidden: centerPage !== 'swarm', children: centerPage === 'swarm' && renderSlot('swarm.center', { showConversation: setSwarmVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhassistant-seat", hidden: centerPage !== 'assistant', children: centerPage === 'assistant' && renderSlot('assistant.center', { showConversation: setAssistantVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhwork-conversation", hidden: centerPage !== 'chat' && !(centerPage === 'assistant' && assistantVisible) && !(centerPage === 'swarm' && swarmVisible), "aria-label": centerPage === 'assistant' ? 'Little X chat' : undefined, children: renderSlot('conversation', {}) }), centerPage === 'plugins' && (0, jsx_runtime_1.jsxs)("main", { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px clamp(20px, 5vw, 56px)' }, children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", style: { cursor: 'pointer', background: 'none', border: 0, color: 'var(--dsw-alias-label-secondary)', padding: '0 0 24px', font: 'inherit' }, "aria-label": "Back to chat", onClick: closeCenterPage, children: ["\u2190 ", navigator.language.startsWith('zh') ? '返回对话' : 'Back to chat'] }), renderSlot('plugins.center', {})] }), centerPage === 'work' && (0, jsx_runtime_1.jsx)(WorkCenter_1.WorkCenter, { close: closeCenterPage, renderTasks: () => renderSlot('work.center.tasks', { openSession: openWorkSession }), renderAutomations: () => renderSlot('work.center.automations', { openSession: openWorkSession }), renderExecutions: () => renderSlot('work.center.executions', { openSession: openWorkSession }) })] }) }), workspaceDrawer && (0, jsx_runtime_1.jsx)("button", { type: "button", className: AppFrame_styles_1.default.workspaceScrim, "aria-label": "\u5173\u95ED\u5DE5\u4F5C\u533A", onClick: () => updateSpace(value => ({ ...value, collapsed: true })) }), (0, jsx_runtime_1.jsxs)(DetailsColumn, { children: [browserCloseError?.owner === spaceKey && (0, jsx_runtime_1.jsx)("p", { role: "alert", children: browserCloseError.message }), (0, jsx_runtime_1.jsx)(workspace_pane_1.XhWorkspacePane, { space: space, spaces: spaces, open: workspaceOpen, sessionId: spaceKey === '__global__' ? null : spaceKey, renderSlot: renderSlot, onSelect: id => updateSpace(value => ({ ...value, activeId: id })), onClose: closeWorkspace, onUpdate: updateItem, onUpdateOwner: (owner, id, patch) => setSpaces(all => {
+                                    const prior = all[owner];
+                                    if (!prior?.items.some(item => item.id === id))
+                                        return all;
+                                    return { ...all, [owner]: { ...prior, items: prior.items.map(item => item.id === id ? { ...item, ...patch } : item) } };
+                                }), onNewBrowser: () => openWorkspace('browser', true) })] })] }), (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.overlayLayer, "data-shell-overlay": true, children: renderSlot('shell.overlay', {}) }), !sidebarCollapsed && !sidebarDrawer && (0, jsx_runtime_1.jsx)(DragHandle, { side: "sidebar", left: cols.sidebar, onStart: onSidebarStart, onDrag: onSidebarDrag, onEnd: onDragEnd }), workspaceDockWidth > 0 && (0, jsx_runtime_1.jsx)(DragHandle, { side: "details", left: viewport - workspaceDockWidth, onStart: onWorkspaceStart, onDrag: onWorkspaceDrag, onEnd: onDragEnd })] }));
 }
 
 },
@@ -985,107 +977,43 @@ function workspaceDockVisibility(event) {
 
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.modelBrowserOpen = modelBrowserOpen;
-exports.modelBrowserClose = modelBrowserClose;
-exports.listenModelBrowser = listenModelBrowser;
+exports.ownedBrowserPage = ownedBrowserPage;
+exports.listenOwnedBrowser = listenOwnedBrowser;
 const runtime_types_1 = require("../shared/runtime-types");
-function modelBrowserOpen(raw) {
+function ownedBrowserPage(raw, backend) {
     const value = (0, runtime_types_1.objectValue)(raw);
-    if (typeof value.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)
-        || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128 || typeof value.url !== 'string' || value.url.length > 4096)
+    if (typeof value.owner !== 'string' || !value.owner || value.owner.length > 128 || typeof value.tabId !== 'string' || !(backend === "browser" ? /^headless:[0-9a-f]{32}$/ : /^browser:[A-Za-z0-9_-]{1,56}$/).test(value.tabId) || typeof value.closed !== 'boolean')
+        return;
+    if (value.closed)
+        return { owner: value.owner, tabId: value.tabId, backend, closed: true };
+    if (typeof value.url !== 'string' || value.url.length > 4096)
         return;
     try {
         const url = new URL(value.url);
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
             return;
-        return { requestId: value.requestId, owner: value.owner, url: url.href };
+        return { owner: value.owner, tabId: value.tabId, backend, closed: false, url: url.href };
     }
     catch {
         return;
     }
 }
-function modelBrowserClose(raw) {
-    const value = (0, runtime_types_1.objectValue)(raw);
-    if (typeof value.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)
-        || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128
-        || typeof value.tabId !== 'string' || !/^[A-Za-z0-9:_-]{1,64}$/.test(value.tabId))
-        return;
-    return { requestId: value.requestId, owner: value.owner, tabId: value.tabId };
-}
-/** Always mounted at AppFrame, even when settings or another center occludes
- * the browser. Events never change the selected chat or borrow its identity. */
-function listenModelBrowser(native, ui) {
+function listenOwnedBrowser(native, accept) {
     let disposed = false;
-    const unlisten = [];
-    const requests = new Set();
-    const recent = [];
-    const remember = (id) => { if (!recent.includes(id)) {
-        recent.push(id);
-        if (recent.length > 128)
-            recent.shift();
-    } };
-    const bind = (event, handle) => {
-        void native.event.listen(event, event => { if (!disposed)
-            handle(event.payload); }).then(stop => {
-            if (disposed)
-                stop();
-            else
-                unlisten.push(stop);
-        }).catch(() => { });
-    };
-    bind('xharness-browser-control-open', raw => {
-        const request = modelBrowserOpen(raw);
-        if (!request)
-            return;
-        if (recent.includes(request.requestId))
-            return;
-        remember(request.requestId);
-        if (ui.currentOwner() !== request.owner || !ui.ready()) {
-            void native.core.invoke('desktop_browser_control_reply', { requestId: request.requestId, reply: { status: 'failed' } }).catch(() => { });
-            return;
-        }
-        requests.add(request.requestId);
-        ui.open(request);
-    });
-    bind('xharness-browser-control-close', raw => {
-        const request = modelBrowserClose(raw);
-        if (!request || recent.includes(request.requestId))
-            return;
-        remember(request.requestId);
-        const reply = (closed) => native.core.invoke('desktop_browser_control_reply', {
-            requestId: request.requestId, reply: closed ? { status: 'closed', tab_id: request.tabId } : { status: 'failed' },
-        }).catch(() => { });
-        if (ui.currentOwner() !== request.owner || !ui.ready()) {
-            void reply(false);
-            return;
-        }
-        void ui.close(request).then(reply, () => reply(false));
-    });
-    bind('xharness-browser-control-cancel', raw => {
-        if (typeof raw !== 'string' || !/^[0-9a-f]{32}$/.test(raw))
-            return;
-        remember(raw);
-        if (!requests.delete(raw))
-            return;
-        ui.cancel(raw);
-    });
-    // Ready tabs no longer need a cancellation tombstone. Native controls ignore
-    // late replies; marking completion is local-only and contains no page data.
-    const settled = (event) => {
-        if (event instanceof CustomEvent && typeof event.detail === 'string')
-            requests.delete(event.detail);
-    };
-    window.addEventListener('xharness:browser-control-settled', settled);
-    return () => {
-        disposed = true;
-        unlisten.forEach(stop => stop());
-        window.removeEventListener('xharness:browser-control-settled', settled);
-        for (const requestId of requests) {
-            ui.cancel(requestId);
-            void native.core.invoke('desktop_browser_control_reply', { requestId, reply: { status: 'failed' } }).catch(() => { });
-        }
-        requests.clear();
-    };
+    const stops = [];
+    const subscriptions = [["xharness-browser-owned-page", "webview"], ["xharness-headless-page", "browser"]];
+    for (const [event, backend] of subscriptions) {
+        void native.event.listen(event, ev => { if (disposed)
+            return; const page = ownedBrowserPage(ev.payload, backend); if (page)
+            accept(page); })
+            .then(unlisten => { if (disposed)
+            unlisten();
+        else
+            stops.push(unlisten); })
+            .catch(() => { if (!disposed)
+            console.error("Browser presentation subscription failed"); });
+    }
+    return () => { disposed = true; stops.forEach(stop => stop()); };
 }
 
 },

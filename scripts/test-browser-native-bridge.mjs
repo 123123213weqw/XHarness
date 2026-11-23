@@ -11,7 +11,7 @@ const deps = resolve(process.env.UI_TEST_DEPS ?? '/Users/wangyue/codex-build/xha
 const require = createRequire(resolve(deps, 'package.json'))
 const { chromium, webkit } = require('playwright')
 const engine = process.env.UI_TEST_BROWSER ?? 'chromium'
-const browser = await ({ chromium, webkit })[engine].launch({ headless: true })
+const browser = await ({ chromium, webkit })[engine].launch({ headless: true, ...(process.env.UI_TEST_EXECUTABLE?{executablePath:process.env.UI_TEST_EXECUTABLE}:{}) })
 try {
   const page = await browser.newPage({ viewport: { width: 960, height: 700 } })
   const errors = []

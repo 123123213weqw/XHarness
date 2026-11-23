@@ -258,9 +258,7 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
     let generation = 0
     let lastGeometry = ''
     let binding: {key: string; until: number} | null = null
-    let renewalTimer: ReturnType<typeof setTimeout> | undefined
     let loading = false
-    let completing = false
     let eventsReady = false
     let pageVersion = 0
     let locationFrame: number | null = null
@@ -275,7 +273,6 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
     const hide = async () => {
       await send('desktop_browser_activate', { tabId: null })
       lastGeometry = 'hidden'; binding = null
-      clearTimeout(renewalTimer)
     }
     const syncBounds = () => {
       const requested = ++generation
@@ -330,22 +327,10 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
             await hide()
             throw Error(accessText('浏览器会话绑定失败，请检查桌面版本。', 'Browser session binding failed; check the desktop version.'))
           }
-          // No status polling or extra permission UI. Refresh the same binding
-          // before expiry; native renewal preserves the current observation frame.
+          // Cache presentation acknowledgement only. Authenticated Host calls
+          // renew execution; no visible-UI renewal timer owns the page lifetime.
           const delay = Math.max(1000, Math.min(300000, grant.remainingMs / 2))
           binding = { key, until: performance.now() + delay }
-          clearTimeout(renewalTimer)
-          renewalTimer = setTimeout(syncBounds, delay)
-        }
-        const requestId=itemRef.current.modelRequestId
-        if(!loading&&binding&&requestId&&!completing){
-          completing=true
-          const accepted=await send('desktop_browser_control_reply',{requestId,reply:{status:'ready',tab_id:item.id}})
-          if(accepted===true){
-            onUpdate({modelRequestId:undefined})
-            window.dispatchEvent(new CustomEvent('xharness:browser-control-settled',{detail:requestId}))
-          }
-          else completing=false
         }
         return true
       }).catch((error: unknown) => {
@@ -410,17 +395,11 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
       else if (payload.kind === 'blocked-url') setError(`已阻止非网页链接：${payload.value}`)
     }).then(fn => { if (disposed) fn(); else { unlisten = fn; eventsReady = true; requestAnimationFrame(syncBounds) } }).catch((error: unknown) => { if (!disposed) setError(String(error)) })
     return () => {
-      disposed = true; window.removeEventListener('xharness:browser-closing',onClosing); generation++; clearTimeout(renewalTimer); observer.disconnect(); stopWatchingSurfaces(); window.removeEventListener('resize', syncBounds); unlisten?.()
+      disposed = true; window.removeEventListener('xharness:browser-closing',onClosing); generation++; observer.disconnect(); stopWatchingSurfaces(); window.removeEventListener('resize', syncBounds); unlisten?.()
       if (locationFrame !== null) cancelAnimationFrame(locationFrame)
       if (nativeSyncRef.current === syncBounds) nativeSyncRef.current = null
-      const requestId=itemRef.current.modelRequestId
-      if(requestId){
-        // Closing/switching chats cancels the rendezvous immediately, not after
-        // its full load timeout. Native verifies the main caller and request ID.
-        void native.core.invoke('desktop_browser_control_reply',{requestId,reply:{status:'failed'}}).catch(()=>{})
-        closing=true
-        void native.core.invoke('desktop_browser_close',{tabId:item.id}).catch(()=>{})
-      }
+      // Unmount/hide detaches presentation only. Service-owned open/ready and
+      // the authenticated chat binding survive selecting a different chat.
       void invoke('desktop_browser_activate', { tabId: null }).catch(() => {})
     }
   }, [item.id, open, sessionId])
@@ -450,7 +429,10 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
     if ('error' in result) { setError(result.error); return }
     if(native&&preferHeadless&&sessionId){
       setDraft(result.url);setError('')
-      void native.core.invoke('desktop_headless_control',{owner:sessionId,arguments:{action:'open',url:result.url}}).catch((error:unknown)=>setError(String(error)))
+      void native.core.invoke('desktop_headless_control',{owner:sessionId,arguments:{action:'open',url:result.url}}).then(raw=>{
+        const reply=objectValue(raw)
+        if(reply.ok!==true)setError(typeof reply.message==='string'?reply.message:'后台浏览器未打开')
+      },(error:unknown)=>setError(String(error)))
       return
     }
     const entries = [...(item.entries ?? []).slice(0, item.position + 1), result.url]
@@ -621,11 +603,7 @@ export function apply(ctx: BrowserContext) {
     const onCloseTab = (event: Event) => {
       const id = event instanceof CustomEvent ? objectValue(event.detail).id : undefined
       if (typeof id !== 'string' || !id) return
-      if(id.startsWith('headless:')){
-        const owner=event instanceof CustomEvent?objectValue(event.detail).owner:undefined
-        if(typeof owner==='string')void native.core.invoke('desktop_headless_control',{owner,tabId:id,arguments:{action:'close'}}).catch(()=>{})
-        return
-      }
+      if(id.startsWith('headless:'))return // The owning workspace awaits its exact close receipt.
       // Closing must not wait behind an unrelated navigation/observation.
       void native.core.invoke('desktop_browser_close', { tabId: id }).catch(() => {})
     }

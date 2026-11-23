@@ -2,6 +2,8 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use xharness_desktop::headless_browser::Browsers;
+#[path = "probe_support/headless_takeover.rs"]
+mod takeover;
 fn main() {
     if xharness_desktop::headless_browser::run_helper() {
         return;
@@ -10,6 +12,10 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
+    if std::env::args().nth(1).as_deref() == Some("--takeover-acceptance") {
+        runtime.block_on(takeover::run());
+        return;
+    }
     runtime.block_on(async {
         let browsers = Browsers::default();
         println!(

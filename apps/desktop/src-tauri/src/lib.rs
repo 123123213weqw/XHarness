@@ -171,6 +171,7 @@ pub fn run() {
             browser_picker::desktop_browser_pick,
             browser_perform::desktop_browser_perform,
             headless_browser::desktop_headless_preview,
+            headless_browser::desktop_headless_manual,
             headless_browser::desktop_headless_control,
         ])
         .on_window_event(|window, event| {

@@ -239,12 +239,16 @@ def core_native_apis_passed(api: dict) -> bool:
 def contract_completed(log_text: str) -> bool:
     # AppHandle.exit() can stop a native event loop without changing main's
     # process exit status. Require positive terminal evidence, not rc=0 alone.
-    return ("Native Tauri DOM probe passed:" in log_text
-            and "Native lifecycle probe passed:" in log_text
-            and subframe_navigation_passed(log_text)
-            and browser_lifecycle_passed(log_text)
-            and "Native observation probe failed:" not in log_text
-            and hard_capabilities(log_text).get("status") != "unverified")
+    from scripts.gui_bench.check_browser_lifecycle_evidence import verify
+    if ("Native Tauri DOM probe passed:" not in log_text
+            or not browser_lifecycle_passed(log_text)
+            or hard_capabilities(log_text).get("status") == "unverified"):
+        return False
+    try:
+        verify(log_text, mode="full")
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return False
+    return True
 
 
 def browser_lifecycle_passed(log_text: str) -> bool:
@@ -303,7 +307,7 @@ def main() -> int:
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--macos-titlebar", choices=["standard", "overlay"], default="standard")
     parser.add_argument("--ready-delay-ms", type=int, choices=[0, 6000], default=0,
-                        help="Delay only the test adapter's Ready acknowledgement; never replay navigation")
+                        help="Delay the loopback document response; native service readiness must wait without replay")
     args = parser.parse_args()
     if args.macos_titlebar != "standard" and sys.platform != "darwin":
         parser.error("macOS titlebar variants require a macOS probe")

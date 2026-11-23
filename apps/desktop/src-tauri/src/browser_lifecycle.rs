@@ -1,30 +1,24 @@
-//! Model → UI rendezvous. The UI remains the sole owner of pane geometry and
-//! presentation. A receipt is issued only after the native guest is loaded and
-//! bound to the requesting chat. Dropping a request cancels its provisional tab.
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Mutex, time::Duration};
-use tauri::{AppHandle, Emitter, Manager, State, Webview};
-use tokio::sync::oneshot;
-
-pub(crate) const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
-
+//! Service-owned WebView lifecycle. The renderer only presents ready pages.
+//! Host socket cancellation removes exactly its provisional page; UI selection
+//! cannot cancel creation or publish a forged Ready/Closed acknowledgement.
 use crate::browser::{self, BrowserState};
-
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
+use tauri::{AppHandle, Emitter, Manager, State, Webview};
+pub(crate) const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
-pub struct BrowserLifecycle(Mutex<HashMap<String, Pending>>);
-struct Pending {
-    started: bool,
-    close_tab: Option<String>,
+pub struct BrowserLifecycle(Mutex<HashMap<String, PendingOpen>>);
+struct PendingOpen {
     owner: String,
-    reply: oneshot::Sender<Result<Value, String>>,
-}
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenEvent {
-    request_id: String,
-    owner: String,
-    url: String,
+    cancelled: Arc<AtomicBool>,
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -46,9 +40,9 @@ pub fn descriptor(state: &BrowserState, owner: &str) -> Value {
         "engine":"tauri-webview","capabilities":{
             "open":true,"close":true,"observe":true,"dom_actions":true,"browser_input_actions":["click","move","key"],"cross_origin_pointer":true,"global_os_input":false,
             "authenticated_requests":true,"response_read":true,"request_redirects":false,"native_input":true,"cross_origin_frames":false,"javascript":true,"async_javascript":true,"console_capture":true,
-            "screenshot":true,"screenshot_scope":"system WebView viewport snapshot; accelerated media may be omitted","recording":false,"hidden_tab_actions":false
-        },"constraints":["open requires the requesting chat to be visible; no focus stealing",
-            "observe/perform/evaluate/screenshot/input/request/read_response require a loaded, visible, chat-bound tab",
+            "screenshot":true,"screenshot_scope":"system WebView viewport snapshot; accelerated media may be omitted","recording":false,"hidden_tab_actions":cfg!(target_os="linux"),"hidden_dom_actions":true,"hidden_native_input":cfg!(target_os="linux")
+        },"constraints":["open/ready are service-owned; selecting a chat or hiding preview never grants/revokes control",
+            "operations resolve the authenticated chat binding, not the selected sidebar; native background input needs platform acceptance",
             "evaluate executes arbitrary page JavaScript with the action grant; browser same-origin rules apply; timeout does not roll back effects",
             "perform uses DOM actions; input uses browser-owned native events, not global OS input",
             "cross-origin iframe pixels/pointer input supported; cross-origin DOM traversal and recording unsupported"]})
@@ -61,192 +55,182 @@ struct Guard {
 }
 impl Drop for Guard {
     fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
         if let Some(state) = self.app.try_state::<BrowserLifecycle>() {
             if let Ok(mut pending) = state.0.lock() {
                 pending.remove(&self.request_id);
             }
         }
-        // Cancel only an unfinished, provisional tab.
-        // Only a matching provisional tab is removable by this event.
-        let _ = self
-            .app
-            .emit_to("main", "xharness-browser-control-cancel", &self.request_id);
-    }
-}
-
-fn interrupted_receipt(started: bool) -> Value {
-    json!({"ok":false,"effect":if started {"unknown"} else {"not_started"},
-        "message":"browser UI cannot open this page now: select the requesting chat and dismiss overlays before retrying; do not replay an unknown effect automatically"})
-}
-
-impl BrowserLifecycle {
-    pub(super) fn mark_started(&self, tab_id: &str) {
-        if let Some(id) = tab_id.strip_prefix("browser:") {
-            if let Ok(mut pending) = self.0.lock() {
-                if let Some(call) = pending.get_mut(id) {
-                    call.started = true;
+        if !self.completed {
+            let app = self.app.clone();
+            let tab = format!("browser:{}", self.request_id);
+            if let Some(state) = app.try_state::<BrowserState>() {
+                if state.close_tab(&app, &tab).is_err() {
+                    eprintln!("cancelled browser creation cleanup failed");
                 }
             }
         }
     }
+}
+#[cfg(test)]
+fn interrupted_receipt(started: bool) -> Value {
+    json!({"ok":false,"effect":if started {"unknown"}else{"not_started"},"message":"browser creation was interrupted; inspect state before deciding; never replay an uncertain effect"})
+}
+impl BrowserLifecycle {
     pub async fn open(&self, app: &AppHandle, owner: &str, url: String) -> Result<Value, String> {
         let url = browser::web_url(&url)?.to_string();
-        let mut nonce = [0u8; 16];
-        getrandom::fill(&mut nonce).map_err(|_| "browser request entropy unavailable")?;
-        let request_id: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
-        let (reply, receive) = oneshot::channel();
+        if owner.is_empty() || owner.len() > 128 || owner.chars().any(char::is_control) {
+            return Err("invalid browser owner".into());
+        }
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| "browser entropy unavailable")?;
+        let request_id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let cancelled = Arc::new(AtomicBool::new(false));
         {
             let mut pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
-            if pending.len() >= 4 || pending.values().any(|call| call.owner == owner) {
-                return Err("browser open already pending; wait for its receipt".into());
+            if pending.len() >= 4 || pending.values().any(|entry| entry.owner == owner) {
+                return Err("browser open already pending or capacity reached".into());
             }
             pending.insert(
                 request_id.clone(),
-                Pending {
-                    started: false,
-                    close_tab: None,
-                    owner: owner.to_owned(),
-                    reply,
-                },
-            );
-        }
-        let mut guard = Guard {
-            app: app.clone(),
-            request_id: request_id.clone(),
-            completed: false,
-        };
-        let _activity = crate::browser_activity::Activity::start(
-            owner,
-            &format!("browser:{request_id}"),
-            crate::browser_activity::Operation::Open,
-            |event| {
-                let _ = app.emit_to("main", "xharness-browser-activity", event);
-            },
-        );
-        app.emit_to(
-            "main",
-            "xharness-browser-control-open",
-            OpenEvent {
-                request_id,
-                owner: owner.into(),
-                url,
-            },
-        )
-        .map_err(|_| "browser UI unavailable")?;
-        let result = tokio::time::timeout(OPEN_TIMEOUT, receive)
-            .await
-            .map_err(|_| "browser open timed out; provisional tab cancelled")?
-            .map_err(|_| "browser open cancelled")?;
-        if result.as_ref().is_ok_and(|receipt| receipt["ok"] == true) {
-            // Completed tabs are no longer provisional. No late cancel event.
-            guard.completed = true;
-        }
-        result
-    }
-    /// UI removes exactly the captured tab. A newer selection is not a new
-    /// target, and closure is acknowledged only after native destruction.
-    pub async fn close(&self, app: &AppHandle, owner: &str) -> Result<Value, String> {
-        let tab_id = app.state::<BrowserState>().delegated_tab(owner)?;
-        let mut nonce = [0u8; 16];
-        getrandom::fill(&mut nonce).map_err(|_| "browser request entropy unavailable")?;
-        let request_id: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
-        let (reply, receive) = oneshot::channel();
-        {
-            let mut pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
-            if pending.len() >= 4 || pending.values().any(|call| call.owner == owner) {
-                return Err("browser control already pending; wait for its receipt".into());
-            }
-            pending.insert(
-                request_id.clone(),
-                Pending {
-                    started: true,
-                    close_tab: Some(tab_id.clone()),
+                PendingOpen {
                     owner: owner.into(),
-                    reply,
+                    cancelled: cancelled.clone(),
                 },
             );
         }
+        let tab_id = format!("browser:{request_id}");
         let mut guard = Guard {
             app: app.clone(),
-            request_id: request_id.clone(),
+            request_id,
             completed: false,
         };
         let _activity = crate::browser_activity::Activity::start(
             owner,
             &tab_id,
-            crate::browser_activity::Operation::Close,
+            crate::browser_activity::Operation::Open,
             |event| {
-                let _ = app.emit_to("main", "xharness-browser-activity", event);
+                if app
+                    .emit_to("main", "xharness-browser-activity", event)
+                    .is_err()
+                {
+                    eprintln!("browser activity notification failed");
+                }
             },
         );
-        app.emit_to(
-            "main",
-            "xharness-browser-control-close",
-            json!({"requestId":request_id,"owner":owner,"tabId":tab_id}),
-        )
-        .map_err(|_| "browser UI unavailable")?;
-        let result = tokio::time::timeout(Duration::from_secs(10), receive)
-            .await
-            .map_err(|_| {
-                "browser close receipt timed out; effect unknown; check status before retrying"
-            })?
-            .map_err(|_| "browser close cancelled; effect unknown")?;
-        guard.completed = result.as_ref().is_ok_and(|receipt| receipt["ok"] == true);
-        result
+        let ready = tokio::time::timeout(OPEN_TIMEOUT, async {
+            browser::open_owned(app, tab_id.clone(), url, &cancelled).await?;
+            let state = app.state::<BrowserState>();
+            loop {
+                if cancelled.load(Ordering::SeqCst) {
+                    return Err("browser creation cancelled during session retirement".into());
+                }
+                let (view, inspector) = state.inspection_target(&tab_id)?;
+                let actual = view.url().map_err(|_| "native URL unavailable")?;
+                if browser::web_url(actual.as_str()).is_ok() {
+                    inspector.delegation.grant(owner.into(), &actual, true)?;
+                    if let Ok(receipt) = state.loaded_receipt(owner, &tab_id) {
+                        return Ok::<Value, String>(receipt);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| "browser creation readiness timed out; provisional page cancelled")??;
+        {
+            // Serialize the Ready publication with retirement's cancellation
+            // signal. No stale Ready event may follow retirement's close event.
+            let _pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("browser creation cancelled during session retirement".into());
+            }
+            app.state::<BrowserState>().bind_owner(owner, &tab_id)?;
+            guard.completed = true;
+            // Presentation delivery cannot roll back a page already opened.
+            if app
+                .emit_to(
+                    "main",
+                    "xharness-browser-owned-page",
+                    json!({"owner":owner,"tabId":tab_id,"url":ready["url"],"closed":false}),
+                )
+                .is_err()
+            {
+                eprintln!("browser ready presentation notification failed");
+            }
+        }
+        Ok(ready)
+    }
+    pub async fn close(&self, app: &AppHandle, owner: &str) -> Result<Value, String> {
+        let tab_id = app.state::<BrowserState>().owned_tab(owner)?;
+        let _activity = crate::browser_activity::Activity::start(
+            owner,
+            &tab_id,
+            crate::browser_activity::Operation::Close,
+            |event| {
+                if app
+                    .emit_to("main", "xharness-browser-activity", event)
+                    .is_err()
+                {
+                    eprintln!("browser activity notification failed");
+                }
+            },
+        );
+        let state = app.state::<BrowserState>();
+        state.close_tab_for_owner(app, owner, &tab_id)?;
+        let receipt = state.closed_receipt(&tab_id)?;
+        notify_closed(app, owner, &tab_id);
+        Ok(receipt)
+    }
+
+    pub(super) fn retire(&self, app: &AppHandle, owner: &str) -> Result<(), String> {
+        let provisional = {
+            let pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
+            pending
+                .iter()
+                .filter(|(_, entry)| entry.owner == owner)
+                .map(|(id, entry)| {
+                    entry.cancelled.store(true, Ordering::SeqCst);
+                    format!("browser:{id}")
+                })
+                .collect::<Vec<_>>()
+        };
+        app.state::<BrowserState>()
+            .retire_owned(app, owner, &provisional)
     }
 }
 
+pub(super) fn notify_closed(app: &AppHandle, owner: &str, tab_id: &str) {
+    if app
+        .emit_to(
+            "main",
+            "xharness-browser-owned-page",
+            json!({"owner":owner,"tabId":tab_id,"closed":true}),
+        )
+        .is_err()
+    {
+        eprintln!("browser close presentation notification failed");
+    }
+}
+/// Legacy renderer receipts cannot complete or cancel service-owned operations.
+/// Keep the command's closed wire shape for installed UI compatibility.
 #[tauri::command]
 pub async fn desktop_browser_control_reply(
     app: AppHandle,
     caller: Webview,
-    state: State<'_, BrowserLifecycle>,
+    _state: State<'_, BrowserLifecycle>,
     request_id: String,
     reply: ControlReply,
 ) -> Result<bool, String> {
     browser::ensure_main(&caller)?;
-    let mut pending = state
-        .0
-        .lock()
-        .map_err(|_| "browser lifecycle unavailable")?;
-    let Some(call) = pending.get(&request_id) else {
-        return Ok(false);
-    };
-    let ready = matches!(
-        reply,
-        ControlReply::Ready { .. } | ControlReply::Closed { .. }
-    );
-    let result = match reply {
-        ControlReply::Failed {} => Ok(if call.close_tab.is_some() {
-            json!({"ok":false,"effect":"unknown","message":"browser close was not confirmed; check status before retrying"})
-        } else {
-            interrupted_receipt(call.started)
-        }),
-        ControlReply::Closed { tab_id } => {
-            if call.close_tab.as_deref() != Some(tab_id.as_str()) {
-                return Ok(false);
-            }
-            app.state::<BrowserState>().closed_receipt(&tab_id)
+    match reply {
+        ControlReply::Ready { tab_id } | ControlReply::Closed { tab_id } => {
+            let _ = tab_id;
         }
-        ControlReply::Ready { tab_id } => {
-            if call.close_tab.is_some() || tab_id != format!("browser:{request_id}") {
-                return Ok(false);
-            }
-            app.state::<BrowserState>()
-                .loaded_receipt(&call.owner, &tab_id)
-        }
-    };
-    // A forged/premature Ready does not settle the pending request.
-    if result.is_err() && ready {
-        return Ok(false);
+        ControlReply::Failed {} => {}
     }
-    let call = pending.remove(&request_id).ok_or("browser request ended")?;
-    Ok(call.reply.send(result).is_ok())
+    let _ = (app, request_id);
+    Ok(false)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,12 +268,12 @@ mod tests {
         assert_eq!(status["capabilities"]["close"], true);
         assert_eq!(status["capabilities"]["screenshot"], true);
         assert_eq!(status["bound"], false);
-        for capability in [
-            "cross_origin_frames",
-            "recording",
-            "hidden_tab_actions",
-            "global_os_input",
-        ] {
+        assert_eq!(
+            status["capabilities"]["hidden_native_input"],
+            cfg!(target_os = "linux")
+        );
+        assert_eq!(status["capabilities"]["hidden_dom_actions"], true);
+        for capability in ["cross_origin_frames", "recording", "global_os_input"] {
             assert_eq!(status["capabilities"][capability], false);
         }
     }

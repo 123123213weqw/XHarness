@@ -28,6 +28,8 @@ mod browser_request;
 #[allow(dead_code)]
 mod headless_browser;
 
+#[path = "probe_support/background_lifecycle.rs"]
+mod background_lifecycle;
 #[cfg(target_os = "macos")]
 #[path = "probe_support/empty_url.rs"]
 mod empty_url_probe;
@@ -108,71 +110,6 @@ async fn evidence(guest: &tauri::Webview, expression: &str) -> Result<Value, Str
     browser_inspect::decode_callback(&raw)
 }
 
-async fn abandoned_open_probe(
-    app: &tauri::AppHandle,
-    connection: &browser_bridge::Connection,
-    url: &str,
-) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
-    let activity = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-    let observed = activity.clone();
-    let activity_listener = app.listen_any("xharness-browser-activity", move |event| {
-        if let Ok(value) = serde_json::from_str(event.payload()) {
-            observed.lock().unwrap().push(value);
-        }
-    });
-    let (opened, receive_open) = tokio::sync::oneshot::channel();
-    let opened = std::sync::Mutex::new(Some(opened));
-    let open_listener = app.listen_any("xharness-browser-control-open", move |event| {
-        let value: Value = serde_json::from_str(event.payload()).unwrap();
-        if let Some(sender) = opened.lock().unwrap().take() {
-            let _ = sender.send(value["requestId"].as_str().unwrap().to_owned());
-        }
-    });
-    let (cancelled, receive_cancel) = tokio::sync::oneshot::channel();
-    let cancelled = std::sync::Mutex::new(Some(cancelled));
-    let cancel_listener = app.listen_any("xharness-browser-control-cancel", move |event| {
-        let id: String = serde_json::from_str(event.payload()).unwrap();
-        if let Some(sender) = cancelled.lock().unwrap().take() {
-            let _ = sender.send(id);
-        }
-    });
-    let mut stream = tokio::net::TcpStream::connect(&connection.address)
-        .await
-        .map_err(|_| "cancel probe connect failed")?;
-    let bytes = serde_json::to_vec(&json!({"token":connection.token,"owner":"probe-owner","op":"control","arguments":{"action":"open","url":url}})).unwrap();
-    stream
-        .write_u32(bytes.len() as u32)
-        .await
-        .map_err(|_| "cancel probe write failed")?;
-    stream
-        .write_all(&bytes)
-        .await
-        .map_err(|_| "cancel probe write failed")?;
-    let id = tokio::time::timeout(Duration::from_secs(3), receive_open)
-        .await
-        .map_err(|_| "cancel probe open event missing")?
-        .map_err(|_| "cancel probe receiver closed")?;
-    drop(stream);
-    let cancelled_id = tokio::time::timeout(Duration::from_secs(3), receive_cancel)
-        .await
-        .map_err(|_| "abandoned socket did not cancel UI open")?
-        .map_err(|_| "cancel probe receiver closed")?;
-    app.unlisten(open_listener);
-    app.unlisten(cancel_listener);
-    app.unlisten(activity_listener);
-    if id != cancelled_id {
-        return Err("abandoned open cancelled a different request".into());
-    }
-    assert_activity_pairs(
-        &activity.lock().unwrap(),
-        "probe-owner",
-        &format!("browser:{id}"),
-    )?;
-    println!("Native browser activity cancellation: balanced start/finish on abandoned authenticated socket");
-    Ok(())
-}
-
 fn assert_activity_pairs(events: &[Value], owner: &str, tab: &str) -> Result<(), String> {
     let mut active = std::collections::HashMap::new();
     if events.len() < 2 {
@@ -201,285 +138,7 @@ fn assert_activity_pairs(events: &[Value], owner: &str, tab: &str) -> Result<(),
 }
 
 async fn lifecycle_probe(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
-    let connection_state = app.state::<browser_bridge::BrowserBridge>();
-    let connection = connection_state.start(app).await?;
-    assert!(connection_state.is_started());
-    let empty = bridge_call(connection, "probe-owner", "list", json!({})).await?;
-    if empty["result"]["available"] != true || empty["result"]["bound"] != false {
-        return Err("zero-tab browser discovery failed".into());
-    }
-    let denied = bridge_call(
-        connection,
-        "probe-owner",
-        "control",
-        json!({"action":"eval","script":"private-input"}),
-    )
-    .await?;
-    if denied["result"]["ok"] != false
-        || denied["result"]["effect"] != "not_started"
-        || denied.to_string().contains("private-input")
-    {
-        return Err("invalid control did not return a sanitized predispatch denial".into());
-    }
-    abandoned_open_probe(app, connection, url).await?;
-    // A native test-owned UI adapter uses exactly the production pane commands.
-    // React sidebar expansion is tested separately, not falsely claimed here.
-    let handle = app.clone();
-    let listener = app.listen_any("xharness-browser-control-open", move |event| {
-        let value: Value = serde_json::from_str(event.payload()).unwrap();
-        let app = handle.clone();
-        let admitted_at = tokio::time::Instant::now();
-        tauri::async_runtime::spawn(async move {
-            let caller = app.get_webview("main").unwrap();
-            let request_id = value["requestId"].as_str().unwrap().to_owned();
-            let tab_id = format!("browser:{request_id}");
-            let owner = value["owner"].as_str().unwrap().to_owned();
-            let url = value["url"].as_str().unwrap().to_owned();
-            browser::desktop_browser_bounds(
-                caller.clone(),
-                app.state(),
-                serde_json::from_value(json!({"x":0,"y":0,"width":780,"height":560})).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-            browser::desktop_browser_activate(caller.clone(), app.state(), Some(tab_id.clone()))
-                .await
-                .unwrap();
-            browser::desktop_browser_navigate(
-                app.clone(),
-                caller.clone(),
-                app.state(),
-                tab_id.clone(),
-                url,
-            )
-            .await
-            .unwrap();
-            if owner == "interrupted-owner" {
-                browser_lifecycle::desktop_browser_control_reply(
-                    app.clone(),
-                    caller.clone(),
-                    app.state(),
-                    request_id,
-                    browser_lifecycle::ControlReply::Failed {},
-                )
-                .await
-                .unwrap();
-                browser::desktop_browser_close(caller, app.state(), tab_id)
-                    .await
-                    .unwrap();
-                return;
-            }
-            let started = tokio::time::Instant::now();
-            let ready_delay = std::env::var("XHARNESS_NATIVE_PROBE_READY_DELAY_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .filter(|value| matches!(value, 0 | 6000))
-                .unwrap_or(0);
-            // Poll acknowledgement, never replay navigation/input. Reserve a
-            // short interval to report failure before the production deadline.
-            let result = readiness::wait(
-                browser_lifecycle::OPEN_TIMEOUT
-                    .saturating_sub(admitted_at.elapsed() + Duration::from_millis(250)),
-                Duration::from_millis(50),
-                || async {
-                    if started.elapsed() < Duration::from_millis(ready_delay) {
-                        return Err("test-owned Ready acknowledgement delayed".into());
-                    }
-                    let (guest, _) = app
-                        .state::<browser::BrowserState>()
-                        .inspection_target(&tab_id)?;
-                    let origin = guest
-                        .url()
-                        .map_err(|_| "native URL unavailable")?
-                        .origin()
-                        .ascii_serialization();
-                    browser_delegation::desktop_browser_delegate(
-                        caller.clone(),
-                        app.state(),
-                        tab_id.clone(),
-                        Some(owner.clone()),
-                        true,
-                        Some(origin),
-                    )
-                    .await?;
-                    // Preserve the exact production readiness checks and expose
-                    // their reason rather than reducing all failures to false.
-                    app.state::<browser::BrowserState>()
-                        .loaded_receipt(&owner, &tab_id)?;
-                    browser_lifecycle::desktop_browser_control_reply(
-                        app.clone(),
-                        caller.clone(),
-                        app.state(),
-                        request_id.clone(),
-                        browser_lifecycle::ControlReply::Ready {
-                            tab_id: tab_id.clone(),
-                        },
-                    )
-                    .await
-                },
-            )
-            .await;
-            if let Err(error) = result {
-                eprintln!("Native lifecycle readiness failed: {error}");
-                let _ = browser_lifecycle::desktop_browser_control_reply(
-                    app.clone(),
-                    caller,
-                    app.state(),
-                    request_id,
-                    browser_lifecycle::ControlReply::Failed {},
-                )
-                .await;
-            }
-        });
-    });
-    let opened = bridge_call(
-        connection,
-        "probe-owner",
-        "control",
-        json!({"action":"open","url":url}),
-    )
-    .await?;
-    if opened["result"]["state"] != "ready" {
-        return Err(format!(
-            "native open did not reach ready: ok={}, state={}, error={}",
-            opened["ok"], opened["result"]["state"], opened["error"]
-        ));
-    }
-    let view = bridge_call(connection, "probe-owner", "observe", json!({})).await?;
-    let fill = serde_json::to_value(action(
-        &view["result"],
-        "Answer",
-        json!({"action":"fill","text":"opened-through-control"}),
-    )?)
-    .unwrap();
-    let receipt = bridge_call(connection, "probe-owner", "perform", fill).await?;
-    let view = bridge_call(connection, "probe-owner", "observe", json!({})).await?;
-    if receipt["result"]["effect"] != "applied"
-        || !view["result"]["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|n| n["value"] == "opened-through-control")
-    {
-        return Err("zero-tab native action lacked verified actual result".into());
-    }
-
-    // A foreign owner cannot close the selected tab or trigger any UI request.
-    let denied_close = bridge_call(
-        connection,
-        "other-owner",
-        "control",
-        json!({"action":"close"}),
-    )
-    .await?;
-    if denied_close["result"]["effect"] != "not_started" {
-        return Err("foreign owner close was not rejected before dispatch".into());
-    }
-    let close_app = app.clone();
-    let close_listener = app.listen_any("xharness-browser-control-close", move |event| {
-        let value: Value = serde_json::from_str(event.payload()).unwrap();
-        let app = close_app.clone();
-        tauri::async_runtime::spawn(async move {
-            let main = app.get_webview("main").unwrap();
-            let id = value["requestId"].as_str().unwrap().to_owned();
-            let tab = value["tabId"].as_str().unwrap().to_owned();
-            // An early/forged receipt must not turn a live tab into success.
-            assert!(!browser_lifecycle::desktop_browser_control_reply(
-                app.clone(),
-                main.clone(),
-                app.state(),
-                id.clone(),
-                browser_lifecycle::ControlReply::Closed {
-                    tab_id: tab.clone()
-                }
-            )
-            .await
-            .unwrap());
-            assert!(!browser_lifecycle::desktop_browser_control_reply(
-                app.clone(),
-                main.clone(),
-                app.state(),
-                id.clone(),
-                browser_lifecycle::ControlReply::Closed {
-                    tab_id: "unrelated".into()
-                }
-            )
-            .await
-            .unwrap());
-            browser::desktop_browser_close(main.clone(), app.state(), tab.clone())
-                .await
-                .unwrap();
-            assert!(browser_lifecycle::desktop_browser_control_reply(
-                app.clone(),
-                main,
-                app.state(),
-                id,
-                browser_lifecycle::ControlReply::Closed { tab_id: tab }
-            )
-            .await
-            .unwrap());
-        });
-    });
-    let closed = bridge_call(
-        connection,
-        "probe-owner",
-        "control",
-        json!({"action":"close"}),
-    )
-    .await?;
-    app.unlisten(close_listener);
-    if closed["result"]["state"] != "closed"
-        || closed["result"]["tab_id"] != opened["result"]["tab_id"]
-    {
-        return Err(format!(
-            "native close lacked exact confirmed target: {closed}"
-        ));
-    }
-    if bridge_call(connection, "probe-owner", "observe", json!({})).await?["ok"] != false
-        || bridge_call(
-            connection,
-            "probe-owner",
-            "control",
-            json!({"action":"status"}),
-        )
-        .await?["result"]["bound"]
-            != false
-    {
-        return Err("closed tab retained observation/binding access".into());
-    }
-    // Closing again is not permission to close a different tab.
-    if bridge_call(
-        connection,
-        "probe-owner",
-        "control",
-        json!({"action":"close"}),
-    )
-    .await?["result"]["effect"]
-        != "not_started"
-    {
-        return Err("repeated close was not scoped to the now-absent target".into());
-    }
-    let interrupted = bridge_call(
-        connection,
-        "interrupted-owner",
-        "control",
-        json!({"action":"open","url":url}),
-    )
-    .await?;
-    app.unlisten(listener);
-    if interrupted["result"]["ok"] != false || interrupted["result"]["effect"] != "unknown" {
-        return Err("closing an admitted native navigation incorrectly claimed not_started".into());
-    }
-    let main = app.get_webview("main").unwrap();
-    browser::desktop_browser_close(
-        main,
-        app.state(),
-        opened["result"]["tab_id"].as_str().unwrap().into(),
-    )
-    .await?;
-    println!("Native lifecycle probe passed: zero-tab discovery -> abandoned-socket cancellation -> open -> native load/binding -> observe -> fill -> observe verification -> owner-scoped close -> revoked access (test UI adapter, no model)");
-    Ok(())
+    background_lifecycle::run(app, url.to_owned()).await
 }
 
 async fn native_api_probe(app: &tauri::AppHandle) -> Result<(), String> {
@@ -606,7 +265,7 @@ async fn native_api_probe(app: &tauri::AppHandle) -> Result<(), String> {
         "cross_origin_frame_traversal":{"status":"not_implemented"},
         "screenshots":screenshots,"observed":result,
         "recording":{"status":"frame_sequence_only; not a production video recorder"},
-        "hidden_background":{"status":"test_only; production delegation still denies hidden tabs",
+        "hidden_background":{"status":"direct API feasibility; production background acceptance is separate",
             "script_executed":background_script==true,"snapshot":hidden_snapshot}})
     );
     Ok(())
@@ -832,8 +491,10 @@ async fn production_native_probe(app: &tauri::AppHandle) -> Result<(), String> {
         return Err("native input accepted stale epoch".into());
     }
     browser::desktop_browser_activate(main.clone(), app.state(), None).await?;
-    if bridge_call(connection, "production-probe", "screenshot", json!({})).await?["ok"] != false {
-        return Err("hidden native snapshot accepted".into());
+    if bridge_call(connection, "production-probe", "screenshot", json!({})).await?["ok"]
+        != cfg!(target_os = "linux")
+    {
+        return Err("background native snapshot did not match platform capability".into());
     }
     browser::desktop_browser_activate(main, app.state(), Some("probe".into())).await?;
     let main = app.get_webview("main").ok_or("main unavailable")?;
@@ -858,7 +519,7 @@ async fn production_native_probe(app: &tauri::AppHandle) -> Result<(), String> {
     component_picker_probe(app, &main, &guest).await?;
     println!(
         "PRODUCTION_NATIVE_EVIDENCE {}",
-        json!({"passed":true,"screenshot":"native_png","viewport":captured_viewport,"input":"actual_field_zZ","hover":"trusted_mousemove","cross_origin_pointer":"trusted_child_click","duplicate_frame":"denied","stale_epoch":"denied","hidden":"denied","wrong_owner":"denied"})
+        json!({"passed":true,"screenshot":"native_png","viewport":captured_viewport,"input":"actual_field_zZ","hover":"trusted_mousemove","cross_origin_pointer":"trusted_child_click","duplicate_frame":"denied","stale_epoch":"denied","hidden":if cfg!(target_os="linux"){"supported"}else{"platform_denied"},"wrong_owner":"denied"})
     );
     Ok(())
 }
@@ -898,7 +559,7 @@ async fn hard_capability_probe(app: &tauri::AppHandle) -> Result<(), String> {
           "trusted_input":{"status":"production_input; perform remains DOM-only","observed_dom_events":events},
           "cross_origin_frames":{"status":"not_implemented","top_document_probe":observed["frameError"]},
           "screenshot":{"status":"production_native_viewport"},"recording":{"status":"not_implemented"},
-          "hidden_tab_actions":{"status":"unsupported_by_current_policy","verified_by_hidden_tab_guard":true},
+          "hidden_tab_actions":{"status":"verified_by_background_lifecycle_probe"},
           "parity_gate":"partial; cross-origin DOM traversal/recording remain absent; no full browser parity claim"
         })
     );
@@ -946,12 +607,22 @@ async fn bridge_call(
     op: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    bridge_call_as(connection, owner, "webview", op, arguments).await
+}
+
+async fn bridge_call_as(
+    connection: &browser_bridge::Connection,
+    owner: &str,
+    backend: &str,
+    op: &str,
+    arguments: Value,
+) -> Result<Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(&connection.address)
         .await
         .map_err(|_| "bridge connection failed")?;
     let request = serde_json::to_vec(
-        &json!({"token":connection.token,"owner":owner,"op":op,"arguments":arguments}),
+        &json!({"token":connection.token,"owner":owner,"backend":backend,"op":op,"arguments":arguments}),
     )
     .unwrap();
     stream
@@ -1176,13 +847,25 @@ async fn delegation_probe(app: &tauri::AppHandle, main: &tauri::Webview) -> Resu
     script_execution_probe::run(connection).await?;
     browser::desktop_browser_activate(main.clone(), app.state(), None).await?;
     browser::desktop_browser_activate(main.clone(), app.state(), Some("probe".into())).await?;
-    if bridge_call(connection, "parent", "list", json!({})).await?["result"]["bound"] != false {
-        return Err("hide/reselect resurrected browser consent".into());
+    if bridge_call(connection, "parent", "list", json!({})).await?["result"]["bound"] != true {
+        return Err("hide/reselect revoked chat ownership".into());
     }
     app.unlisten(listener);
     assert_activity_pairs(&activity.lock().unwrap(), "parent", "probe")?;
     println!("Native browser activity ownership: invalid credential and foreign owner do not emit activity; authenticated calls have balanced exact-tab lifetimes");
-    println!("Private native bridge passed: exact chat binding, read-only denial, frame-preserving renewal, real fill, consumed-frame denial, hide/reselect revocation (no model)");
+    browser_delegation::desktop_browser_delegate(
+        main.clone(),
+        app.state(),
+        "probe".into(),
+        None,
+        false,
+        None,
+    )
+    .await?;
+    if bridge_call(connection, "parent", "observe", json!({})).await?["ok"] != false {
+        return Err("explicit revoke left access live".into());
+    }
+    println!("Private native bridge passed: exact chat binding, read-only denial, frame-preserving renewal, real fill, consumed-frame denial, hide/reselect preserves binding; explicit revoke denies access (no model)");
     Ok(())
 }
 
@@ -1318,6 +1001,9 @@ async fn bounds_probe(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
 }
 
 async fn probe(app: &tauri::AppHandle, url: String) -> Result<(), String> {
+    if std::env::var("XHARNESS_BROWSER_BACKGROUND_PROBE").as_deref() == Ok("1") {
+        return background_lifecycle::run(app, url).await;
+    }
     #[cfg(windows)]
     bounds_probe(app, &url).await?;
     if std::env::var("XHARNESS_NATIVE_PROBE_BOUNDS_ONLY").as_deref() == Ok("1") {
@@ -1705,7 +1391,8 @@ async fn probe(app: &tauri::AppHandle, url: String) -> Result<(), String> {
         return Err("expired queued action executed after callback timeout".into());
     }
     // Hold the guest JS thread briefly, then change selection while the native
-    // callback is pending. A completed read must not leak a stale hidden page.
+    // callback is pending. Same-owner selection must not cancel the read; a
+    // newer observation still replaces the old one-shot action frame.
     guest
         .eval("{ const end=performance.now()+300; while(performance.now()<end){} }")
         .map_err(|e| e.to_string())?;
@@ -1723,9 +1410,7 @@ async fn probe(app: &tauri::AppHandle, url: String) -> Result<(), String> {
     tokio::time::sleep(Duration::from_millis(50)).await;
     browser::desktop_browser_activate(main.clone(), app.state(), None).await?;
     browser::desktop_browser_activate(main.clone(), app.state(), Some("probe".into())).await?;
-    if pending.await.map_err(|e| e.to_string())?.is_ok() {
-        return Err("hide/reselect revived a pending observation".into());
-    }
+    pending.await.map_err(|e| e.to_string())??;
     if perform(
         app,
         &main,
@@ -1747,9 +1432,9 @@ async fn probe(app: &tauri::AppHandle, url: String) -> Result<(), String> {
         Default::default(),
     )
     .await
-    .is_ok()
+    .is_err()
     {
-        return Err("hidden tab was incorrectly inspected".into());
+        return Err("background tab could not be inspected".into());
     }
     // Do not let the temporary child WebView perturb the preceding focus,
     // tracking-area or hover assertions. Its evidence is still mandatory.
@@ -1973,7 +1658,7 @@ fn main() {
             let completed = completed.clone();
             tauri::async_runtime::spawn(async move {
                 let result =
-                    tokio::time::timeout(Duration::from_secs(120), probe(&handle, url)).await;
+                    tokio::time::timeout(Duration::from_secs(if std::env::var("XHARNESS_BROWSER_BACKGROUND_PROBE").as_deref()==Ok("1"){850}else{120}), probe(&handle, url)).await;
                 let records=trace_records.lock().unwrap();
                 let created=records.iter().filter(|r|r.browser_event==Some(xharness_diagnostics::BrowserEvent::Created)).count();
                 let closed=records.iter().filter(|r|r.browser_event==Some(xharness_diagnostics::BrowserEvent::CloseAccepted)).count();

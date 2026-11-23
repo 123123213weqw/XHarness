@@ -49,6 +49,7 @@ fn main() {
             "desktop_set_computer_activity",
             "desktop_browser_navigate",
             "desktop_browser_activate",
+            "desktop_browser_page_state",
             "desktop_browser_bounds",
             "desktop_browser_action",
             "desktop_browser_close",
@@ -61,6 +62,7 @@ fn main() {
             "desktop_browser_pick",
             "desktop_browser_perform",
             "desktop_headless_preview",
+            "desktop_headless_manual",
             "desktop_headless_control",
         ])),
     )
