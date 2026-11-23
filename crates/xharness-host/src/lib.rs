@@ -98,8 +98,9 @@ use xharness_tools::{ToolExecutor, ToolRegistry};
 
 pub use model_settings::{
     automatic_minimum_output_tokens, inherit_model_capabilities, model_settings_schema,
-    parse_model_settings, valid_credential_reference, ConfiguredModel, ModelSettingsBackend,
-    ModelSettingsDocument, ProviderProfile, MODEL_SETTINGS_NAMESPACE,
+    parse_model_settings, retired_account_provider, valid_credential_reference, ConfiguredModel,
+    ModelSettingsBackend, ModelSettingsDocument, ProviderProfile, MODEL_SETTINGS_NAMESPACE,
+    RETIRED_ACCOUNT_CREDENTIAL, RETIRED_ACCOUNT_MESSAGE,
 };
 pub use plugin_backend::PluginBackend;
 pub use questions::{

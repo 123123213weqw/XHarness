@@ -1,13 +1,12 @@
 import {
   IconAgentPresetOutline16, IconArchiveOutline20, IconDataOutline16,
-  IconPersonalizationOutline16, IconSettingsOutline16, IconUserOutline16,
+  IconPersonalizationOutline16, IconSettingsOutline16,
 } from '@xharness/dsh-client-ui-primitives'
 
-type Glyph = 'general' | 'models' | 'account' | 'usage' | 'archive' | 'display' | 'installation' | 'agent' | 'plugins' | 'memory' | 'import' | 'remote'
+type Glyph = 'general' | 'models' | 'usage' | 'archive' | 'display' | 'installation' | 'agent' | 'plugins' | 'memory' | 'import' | 'remote'
 function glyphFor(section: string): Glyph {
   switch (section) {
     case 'models': return 'models'
-    case 'managed-account': return 'account'
     case 'profile': return 'usage'
     case 'archived-chats': return 'archive'
     case 'experience': return 'display'
@@ -23,7 +22,6 @@ function glyphFor(section: string): Glyph {
 function GlyphImage({ kind }: { kind: Glyph }) {
   switch (kind) {
     case 'models': return <IconDataOutline16 size={16} />
-    case 'account': return <IconUserOutline16 size={16} />
     case 'archive': return <IconArchiveOutline20 size={16} />
     case 'agent': return <IconAgentPresetOutline16 size={16} />
     case 'plugins': return <IconPersonalizationOutline16 size={16} />

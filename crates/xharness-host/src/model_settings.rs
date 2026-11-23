@@ -13,6 +13,19 @@ use crate::{
 };
 
 pub const MODEL_SETTINGS_NAMESPACE: &str = "llm-pi-ai";
+pub const RETIRED_ACCOUNT_CREDENTIAL: &str = "XHARNESS_MANAGED_API_TOKEN";
+pub const RETIRED_ACCOUNT_MESSAGE: &str =
+    "The XHarness account model service was retired; configure and select your own provider";
+
+/// Reserve the former first-party route and token without deleting either from
+/// persisted settings. A settings alias must not reactivate the retired token.
+pub fn retired_account_provider(provider: &str, credential: Option<&str>) -> bool {
+    provider == "xharness-managed" || credential == Some(RETIRED_ACCOUNT_CREDENTIAL)
+}
+
+fn retired_account_profile(provider: &str, profile: &Value) -> bool {
+    retired_account_provider(provider, profile.get("apiKeyEnv").and_then(Value::as_str))
+}
 
 /// Production composition implements this; the Host has no native keychain or
 /// HTTP-provider dependency. Preparing must not change the active registry.
@@ -173,8 +186,14 @@ pub fn automatic_minimum_output_tokens(maximum: u64) -> u64 {
 }
 
 pub fn parse_model_settings(value: &Value) -> Result<ModelSettingsDocument, String> {
+    // Filter the runtime projection, never the saved document. Old entries
+    // (even stale model metadata) must not block BYOK or reach discovery.
+    let mut active = value.clone();
+    if let Some(providers) = active.get_mut("providers").and_then(Value::as_object_mut) {
+        providers.retain(|id, profile| !retired_account_profile(id, profile));
+    }
     // Never echo rejected input; it may contain a key pasted in the wrong box.
-    let doc: ModelSettingsDocument = serde_json::from_value(value.clone())
+    let doc: ModelSettingsDocument = serde_json::from_value(active)
         .map_err(|_| "Invalid provider profile fields or field types".to_owned())?;
     if doc.providers.len() > 128 {
         return Err("At most 128 providers are supported".to_owned());
@@ -351,6 +370,19 @@ impl BasicHost {
         let previous = self.state.read().await.settings[MODEL_SETTINGS_NAMESPACE]
             .value
             .clone();
+        if ns
+            .value
+            .get("providers")
+            .and_then(Value::as_object)
+            .is_some_and(|providers| {
+                providers.iter().any(|(id, profile)| {
+                    retired_account_profile(id, profile)
+                        && previous.get("providers").and_then(|p| p.get(id)) != Some(profile)
+                })
+            })
+        {
+            return Err(model_settings_error(RETIRED_ACCOUNT_MESSAGE));
+        }
         inherit_model_capabilities(&mut ns.value, &previous);
         inherit_model_capabilities(&mut ns.value, &ns.base);
         parse_model_settings(&ns.value).map_err(model_settings_error)?;

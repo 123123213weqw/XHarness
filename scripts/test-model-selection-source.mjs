@@ -31,13 +31,13 @@ const catalog={current,routable:true,groups:[{id:'p/x',name:'Provider',models:[m
 const ok=value=>({result:{ok:true,value}});
 function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return{promise,resolve,reject}}
 
-test('source export ABI and original styles retained with reviewed source-menu additions',()=>{
+test('source export ABI and original styles retained without account-only styling',()=>{
  assert.deepEqual(Object.keys(apis[1].plugin).sort(),Object.keys(apis[0].plugin).sort());
  assert.deepEqual(json(apis[1].plugin.inject),json(apis[0].plugin.inject));
  assert.equal(apis[1].styles.length, apis[0].styles.length);
  const old = json(apis[0].styles), next = json(apis[1].styles);
  assert.ok(next[0].textContent.startsWith(old[0].textContent), 'pre-existing styles stay intact');
- assert.match(next[0].textContent, /AbPDjW_sourceBadge/);
+ assert.doesNotMatch(next[0].textContent, /AbPDjW_(?:sourceBadge|backChevron)/);
  assert.equal(next[0].dataset.pluginCss, old[0].dataset.pluginCss);
 });
 test('context validation uses selected model maximum and preserves complete selection',()=>{
@@ -90,7 +90,7 @@ test('/model command, opaque slash ids, dynamic default effort and composer inje
  for (const lang of ['zh','en']) {
   const added = receipts[1].locales[0][1][lang];
   const before = receipts[0].locales[0][1][lang];
-  assert.deepEqual(Object.keys(added).filter(key => !(key in before)).sort(), ['capability.check','capability.checking','capability.configured','capability.disabled','capability.documented','capability.reported','capability.stale','capability.unknown','effort.disabled','effort.disabledHint','effort.trigger','effort.unknown','effort.unknownHint','empty.custom','menu.back','menu.custom','menu.manage','source.account','source.accountHint']);
+  assert.deepEqual(Object.keys(added).filter(key => !(key in before)).sort(), ['capability.check','capability.checking','capability.configured','capability.disabled','capability.documented','capability.reported','capability.stale','capability.unknown','effort.disabled','effort.disabledHint','effort.trigger','effort.unknown','effort.unknownHint','menu.manage']);
   for (const key of Object.keys(before)) assert.equal(added[key], lang === 'zh' && key === 'effort.providerDefault' ? '默认' : before[key]);
  }
  assert.deepEqual({...receipts[1],locales:undefined},{...receipts[0],locales:undefined});

@@ -47,11 +47,6 @@
     "allow-desktop-browser-perform",
     "allow-desktop-headless-preview",
     "allow-desktop-headless-manual",
-    "allow-desktop-headless-control",
-    "allow-desktop-account-start",
-    "allow-desktop-account-poll",
-    "allow-desktop-account-finish",
-    "allow-desktop-account-status",
-    "allow-desktop-account-open"
+    "allow-desktop-headless-control"
   ]
 }

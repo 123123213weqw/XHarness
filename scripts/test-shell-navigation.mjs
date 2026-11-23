@@ -32,20 +32,20 @@ test('session back/forward, duplicates and a new visit prune only the forward br
 })
 test('all center pages use one route stream; replay is presentation, never open-intent',async()=>{
  const f=fixture(),intents=[],projections=[]
- for(const page of ['plugins','work','swarm','assistant'])f.target.addEventListener(`xharness:${page}:open`,()=>intents.push(page))
+ for(const page of ['plugins','work','swarm'])f.target.addEventListener(`xharness:${page}:open`,()=>intents.push(page))
  f.target.addEventListener('xharness:shell-route-changed',event=>projections.push(event.detail.page))
- for(const page of ['plugins','work','swarm','assistant'])await f.page(page)
- f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'swarm');f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'work');f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'swarm')
- assert.deepEqual(intents,['plugins','work','swarm','assistant']);assert.deepEqual(projections.slice(-3),['swarm','work','swarm']);assert.equal(f.writes.length,0);f.dispose()
+ for(const page of ['plugins','work','swarm'])await f.page(page)
+ f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'work');f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'plugins');f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'work')
+ assert.deepEqual(intents,['plugins','work','swarm']);assert.deepEqual(projections.slice(-3),['work','plugins','work']);assert.equal(f.writes.length,0);f.dispose()
 })
 test('same gesture page+session selection records one route regardless of listener order',async()=>{
  for(const before of [true,false]){
   const f=fixture();const choose=()=>f.sessions.open('b')
-  if(before){f.dispose();f.target.addEventListener('xharness:assistant:open',choose);f.dispose=f.nav.mount(f.target)}
-  else f.target.addEventListener('xharness:assistant:open',choose)
-  await f.page('assistant');assert.deepEqual(json(f.nav.getSnapshot().route),{page:'assistant',sessionId:'b'})
+  if(before){f.dispose();f.target.addEventListener('xharness:swarm:open',choose);f.dispose=f.nav.mount(f.target)}
+  else f.target.addEventListener('xharness:swarm:open',choose)
+  await f.page('swarm');assert.deepEqual(json(f.nav.getSnapshot().route),{page:'swarm',sessionId:'b'})
   f.nav.back();assert.deepEqual(json(f.nav.getSnapshot().route),{page:'chat',sessionId:'a'});assert.equal(f.nav.getSnapshot().canBack,false)
-  f.nav.forward();assert.deepEqual(json(f.nav.getSnapshot().route),{page:'assistant',sessionId:'b'});assert.equal(f.writes.filter(x=>x.open==='b').length,2,'exactly original selection + explicit forward, not another feature request');f.dispose()
+  f.nav.forward();assert.deepEqual(json(f.nav.getSnapshot().route),{page:'swarm',sessionId:'b'});assert.equal(f.writes.filter(x=>x.open==='b').length,2,'exactly original selection + explicit forward, not another feature request');f.dispose()
  }
 })
 test('catalog-addressed child returns to parent and can go forward after leaving byId',async()=>{
@@ -83,12 +83,12 @@ test('cleanup cancels queued visits; remount observes current state with one sub
 
 test('initial offline Host never gates local pages or back/forward and binding retains history',async()=>{
  const f=fixture({pending:true,current:null});f.set({...f.list.getSnapshot(),current:undefined,ids:[],byId:{}});await tick()
- for(const page of ['plugins','work','swarm','assistant']){await f.page(page);assert.equal(f.nav.getSnapshot().route.page,page)}
- f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'swarm');f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'work');f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'swarm');assert.deepEqual(f.writes,[])
+ for(const page of ['plugins','work','swarm']){await f.page(page);assert.equal(f.nav.getSnapshot().route.page,page)}
+ f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'work');f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'plugins');f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'work');assert.deepEqual(f.writes,[])
  f.set({...f.list.getSnapshot(),phase:'ready',current:'a',ids:['a','b'],byId:{a:{},b:{}}});await tick()
- assert.deepEqual(json(f.nav.getSnapshot().route),{page:'swarm',sessionId:'a'});assert.equal(f.nav.getSnapshot().canForward,true)
- f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'assistant');assert.deepEqual(f.writes,[])
- f.nav.back();f.nav.back();f.nav.back();f.nav.back();assert.deepEqual(json(f.nav.getSnapshot().route),{page:'chat',sessionId:'a'});assert.equal(f.nav.getSnapshot().canBack,false);assert.deepEqual(f.writes,[]);f.dispose()
+ assert.deepEqual(json(f.nav.getSnapshot().route),{page:'work',sessionId:'a'});assert.equal(f.nav.getSnapshot().canForward,true)
+ f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'swarm');assert.deepEqual(f.writes,[])
+ f.nav.back();f.nav.back();f.nav.back();assert.deepEqual(json(f.nav.getSnapshot().route),{page:'chat',sessionId:'a'});assert.equal(f.nav.getSnapshot().canBack,false);assert.deepEqual(f.writes,[]);f.dispose()
 })
 test('first loaded empty selection is intentional and retained across session visits',async()=>{
  const f=fixture({pending:true,current:null});f.set({...f.list.getSnapshot(),current:undefined,ids:[],byId:{}});await tick();await f.page('plugins')
@@ -115,9 +115,9 @@ test('Swarm is an opt-in presentation route; close/replay never starts or interr
 
 
 test('retired review intent falls back to current chat without a blank page or session command',async()=>{
- const f=fixture();await f.page('assistant');await f.page('review')
+ const f=fixture();await f.page('plugins');await f.page('review')
  assert.deepEqual(json(f.nav.getSnapshot().route),{page:'chat',sessionId:'a'});assert.deepEqual(f.writes,[])
- f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'assistant')
+ f.nav.back();assert.equal(f.nav.getSnapshot().route.page,'plugins')
  f.nav.forward();assert.equal(f.nav.getSnapshot().route.page,'chat')
  await f.page('review');assert.equal(f.nav.getSnapshot().canForward,false);assert.deepEqual(f.writes,[])
  f.dispose();await f.page('review');assert.equal(f.listeners.size,0)

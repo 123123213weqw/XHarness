@@ -231,7 +231,7 @@ impl ApiBackend for BasicHost {
             // PR/chat metadata. Existing normal conversations are unaffected.
             if matches!(endpoint, "github/chat-get" | "github/chat-set") {
                 return Some(RpcResult::failure(RpcError::bad_request(
-                    "PR chat binding has been retired; use the global assistant",
+                    "PR chat binding has been retired; use an ordinary chat",
                     json!([]),
                 )));
             }

@@ -1,5 +1,4 @@
 export const zh = {
-  'menu.back': '返回模型',
   'effort.trigger': '思考：{effort}',
   'effort.unknown': '默认',
   'effort.disabled': '未配置',
@@ -14,11 +13,7 @@ export const zh = {
   'capability.reported': '服务端提供',
   'capability.documented': '厂商文档',
 
-  'menu.custom': '自定义',
   'menu.manage': '管理模型',
-  'source.account': '账号服务',
-  'source.accountHint': '由 XHarness 提供，使用账号额度',
-  'empty.custom': '没有自定义模型。请在管理模型中添加。',
 
 			"command.description": "选择本会话使用的模型",
 			"option.loadError": "目录加载失败：{message}",
@@ -39,7 +34,6 @@ export const zh = {
 			"empty.efforts": "当前模型未提供推理等级。"
 		}
 export const en: Record<keyof typeof zh,string> = {
-  'menu.back': 'Back to models',
   'effort.trigger': 'Thinking: {effort}',
   'effort.unknown': 'Default',
   'effort.disabled': 'Not configured',
@@ -54,11 +48,7 @@ export const en: Record<keyof typeof zh,string> = {
   'capability.reported': 'Provider-reported',
   'capability.documented': 'Provider documentation',
 
-  'menu.custom': 'Custom',
   'menu.manage': 'Manage models',
-  'source.account': 'Account service',
-  'source.accountHint': 'Provided by XHarness, uses account credits',
-  'empty.custom': 'No custom models. Add one in Manage models.',
 
 			"command.description": "Select the model for this conversation",
 			"option.loadError": "Catalog failed to load: {message}",
