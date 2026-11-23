@@ -188,7 +188,11 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
         if !matches!(request.backend, Backend::Browser) || request.arguments != json!({}) {
             return Err("invalid browser retirement request".into());
         }
-        let result = app
+        let webview = app
+            .state::<browser_lifecycle::BrowserLifecycle>()
+            .retire(app, &request.owner);
+        // Still attempt Chromium cleanup if the native backend did not confirm.
+        let mut result = app
             .state::<crate::headless_browser::Browsers>()
             .close(&request.owner)
             .await?;
@@ -206,6 +210,8 @@ async fn dispatch(app: &AppHandle, request: Request) -> Result<Value, String> {
             // Presentation is best effort after a confirmed retirement.
             eprintln!("retired browser notification failed");
         }
+        webview?;
+        result["webview_closed"] = json!(true);
         return Ok(result);
     }
 

@@ -422,14 +422,16 @@ class WebviewTests(unittest.TestCase):
     def test_public_discovery_does_not_grant_observation_or_actions(self):
         def denied(op, arguments):
             if op == 'list': return {'available':True,'bound':False}
-            if op == 'observe': raise RuntimeError('native browser is not delegated to this session')
-            return {'ok':False,'effect':'not_started'}
+            if op == 'observe': raise RuntimeError('no browser is bound to this chat')
+            return {'ok':False,'effect':'not_started','message':'no browser is bound to this chat'}
         verify_unbound_discovery(denied)
         faults = [
             ('list', {'available':True,'bound':True}),
             ('list', {'available':True,'bound':False,'tab_id':'other'}),
             ('observe', {'nodes':[]}),
             ('observe', RuntimeError('transport interrupted')),
+            ('observe', RuntimeError('bridge error: no browser is bound to this chat')),
+            ('perform', {'ok':False,'effect':'not_started','message':'invalid action'}),
             ('perform', {'ok':True,'effect':'applied'}),
             ('perform', {'ok':False,'effect':'unknown'}),
         ]

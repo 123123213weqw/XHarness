@@ -437,18 +437,66 @@ pub async fn run(app: &tauri::AppHandle, url: String) -> Result<(), String> {
     if former["effect"] != "not_started" {
         return Err("former owner closed transferred page".into());
     }
-    for owner in ["chat-A", "transfer-owner"] {
-        let result = call(connection, owner, "control", json!({"action":"close"})).await?;
-        if result["effect"] != "applied" {
-            return Err(format!("close failed: {result}"));
+    // Opening a replacement changes the current action route; it must not
+    // orphan A's original tab, which no longer has a site grant.
+    let newer = call(
+        connection,
+        "chat-A",
+        "control",
+        json!({"action":"open","url":url}),
+    )
+    .await?;
+    let newer = newer["tab_id"]
+        .as_str()
+        .ok_or("replacement A page id missing")?;
+    let browser = app.state::<browser::BrowserState>();
+    let labels = [aid, newer].map(|id| {
+        browser
+            .inspection_target(id)
+            .map(|(view, _)| view.label().to_owned())
+    });
+    let [old_label, new_label] = labels;
+    let labels = [old_label?, new_label?];
+    // Retiring the former owner of B must not remove the transferred page.
+    for owner in ["chat-B", "chat-A", "chat-A"] {
+        let result = bridge_call_as(connection, owner, "browser", "retire", json!({})).await?;
+        if result["ok"] != true
+            || result["result"]["closed"] != true
+            || result["result"]["webview_closed"] != true
+        {
+            return Err("session retirement did not confirm both backends".into());
         }
+    }
+    for _ in 0..50 {
+        if labels.iter().all(|label| app.get_webview(label).is_none()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    if labels.iter().any(|label| app.get_webview(label).is_some())
+        || [aid, newer]
+            .iter()
+            .any(|id| browser.inspection_target(id).is_ok())
+        || state(app, bid).await?["value"] != "unchanged"
+    {
+        return Err("retirement left native pages alive or affected the transferred page".into());
+    }
+    let closed = call(
+        connection,
+        "transfer-owner",
+        "control",
+        json!({"action":"close"}),
+    )
+    .await?;
+    if closed["effect"] != "applied" {
+        return Err("explicit close of transferred page failed".into());
     }
     if call(connection, "chat-A", "list", json!({})).await?["bound"] != false {
         return Err("closed page remained bound".into());
     }
     println!(
         "BACKGROUND_ISOLATION_EVIDENCE {}",
-        json!({"passed":true,"implicit_transfer":"denied","stale_epoch":"denied","explicit_close":true,"revoked_site_cleanup":true,"former_owner_close":"denied"})
+        json!({"passed":true,"implicit_transfer":"denied","stale_epoch":"denied","explicit_close":true,"revoked_site_cleanup":true,"former_owner_close":"denied","retired_webviews_destroyed":2,"transferred_page_survived":true})
     );
     Ok(())
 }

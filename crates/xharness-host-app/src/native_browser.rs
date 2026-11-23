@@ -173,12 +173,16 @@ impl NativeBrowser {
         }
     }
     pub(crate) async fn retire_owned(&self, owner: &str) -> Result<(), String> {
-        self.images.lock().await.forget(true, owner);
+        {
+            let mut images = self.images.lock().await;
+            images.forget(false, owner);
+            images.forget(true, owner);
+        }
         let receipt = self
             .headless()
             .request(owner, "retire", json!({}), &CancellationToken::new())
             .await?;
-        if receipt["ok"] != true || receipt["closed"] != true {
+        if receipt["ok"] != true || receipt["closed"] != true || receipt["webview_closed"] != true {
             return Err("browser retirement was not confirmed".into());
         }
         Ok(())
@@ -1079,7 +1083,7 @@ mod tests {
         server.await.unwrap();
     }
     #[tokio::test]
-    async fn session_retirement_closes_only_its_owned_browser_not_the_native_webview() {
+    async fn session_retirement_requires_both_browser_backends_to_confirm_cleanup() {
         use xharness_host::SessionToolFactory;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let browser = NativeBrowser {
@@ -1099,7 +1103,7 @@ mod tests {
             assert_eq!(request["op"], "retire");
             assert_eq!(request["arguments"], json!({}));
             let bytes = serde_json::to_vec(
-                &json!({"ok":true,"result":{"ok":true,"closed":true,"effect":"applied"}}),
+                &json!({"ok":true,"result":{"ok":true,"closed":true,"webview_closed":true,"effect":"applied"}}),
             )
             .unwrap();
             stream.write_u32(bytes.len() as u32).await.unwrap();

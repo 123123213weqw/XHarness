@@ -4,11 +4,22 @@
 use crate::browser::{self, BrowserState};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter, Manager, State, Webview};
 pub(crate) const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
-pub struct BrowserLifecycle(Mutex<HashMap<String, String>>);
+pub struct BrowserLifecycle(Mutex<HashMap<String, PendingOpen>>);
+struct PendingOpen {
+    owner: String,
+    cancelled: Arc<AtomicBool>,
+}
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlRequest {
@@ -65,9 +76,6 @@ fn interrupted_receipt(started: bool) -> Value {
     json!({"ok":false,"effect":if started {"unknown"}else{"not_started"},"message":"browser creation was interrupted; inspect state before deciding; never replay an uncertain effect"})
 }
 impl BrowserLifecycle {
-    // Kept for the ordinary UI navigation adapter; no renderer acknowledgement
-    // participates in service-owned creation.
-    pub(super) fn mark_started(&self, _: &str) {}
     pub async fn open(&self, app: &AppHandle, owner: &str, url: String) -> Result<Value, String> {
         let url = browser::web_url(&url)?.to_string();
         if owner.is_empty() || owner.len() > 128 || owner.chars().any(char::is_control) {
@@ -76,12 +84,19 @@ impl BrowserLifecycle {
         let mut bytes = [0u8; 16];
         getrandom::fill(&mut bytes).map_err(|_| "browser entropy unavailable")?;
         let request_id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let cancelled = Arc::new(AtomicBool::new(false));
         {
             let mut pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
-            if pending.len() >= 4 || pending.values().any(|o| o == owner) {
+            if pending.len() >= 4 || pending.values().any(|entry| entry.owner == owner) {
                 return Err("browser open already pending or capacity reached".into());
             }
-            pending.insert(request_id.clone(), owner.into());
+            pending.insert(
+                request_id.clone(),
+                PendingOpen {
+                    owner: owner.into(),
+                    cancelled: cancelled.clone(),
+                },
+            );
         }
         let tab_id = format!("browser:{request_id}");
         let mut guard = Guard {
@@ -103,15 +118,17 @@ impl BrowserLifecycle {
             },
         );
         let ready = tokio::time::timeout(OPEN_TIMEOUT, async {
-            browser::open_owned(app, tab_id.clone(), url).await?;
+            browser::open_owned(app, tab_id.clone(), url, &cancelled).await?;
             let state = app.state::<BrowserState>();
             loop {
+                if cancelled.load(Ordering::SeqCst) {
+                    return Err("browser creation cancelled during session retirement".into());
+                }
                 let (view, inspector) = state.inspection_target(&tab_id)?;
                 let actual = view.url().map_err(|_| "native URL unavailable")?;
                 if browser::web_url(actual.as_str()).is_ok() {
                     inspector.delegation.grant(owner.into(), &actual, true)?;
                     if let Ok(receipt) = state.loaded_receipt(owner, &tab_id) {
-                        state.bind_owner(owner, &tab_id)?;
                         return Ok::<Value, String>(receipt);
                     }
                 }
@@ -120,17 +137,26 @@ impl BrowserLifecycle {
         })
         .await
         .map_err(|_| "browser creation readiness timed out; provisional page cancelled")??;
-        guard.completed = true;
-        // Presentation delivery cannot roll back a page already opened.
-        if app
-            .emit_to(
-                "main",
-                "xharness-browser-owned-page",
-                json!({"owner":owner,"tabId":tab_id,"url":ready["url"],"closed":false}),
-            )
-            .is_err()
         {
-            eprintln!("browser ready presentation notification failed");
+            // Serialize the Ready publication with retirement's cancellation
+            // signal. No stale Ready event may follow retirement's close event.
+            let _pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("browser creation cancelled during session retirement".into());
+            }
+            app.state::<BrowserState>().bind_owner(owner, &tab_id)?;
+            guard.completed = true;
+            // Presentation delivery cannot roll back a page already opened.
+            if app
+                .emit_to(
+                    "main",
+                    "xharness-browser-owned-page",
+                    json!({"owner":owner,"tabId":tab_id,"url":ready["url"],"closed":false}),
+                )
+                .is_err()
+            {
+                eprintln!("browser ready presentation notification failed");
+            }
         }
         Ok(ready)
     }
@@ -149,20 +175,40 @@ impl BrowserLifecycle {
                 }
             },
         );
-        let main = app.get_webview("main").ok_or("main renderer unavailable")?;
-        browser::desktop_browser_close(main, app.state(), tab_id.clone()).await?;
-        let receipt = app.state::<BrowserState>().closed_receipt(&tab_id)?;
-        if app
-            .emit_to(
-                "main",
-                "xharness-browser-owned-page",
-                json!({"owner":owner,"tabId":tab_id,"closed":true}),
-            )
-            .is_err()
-        {
-            eprintln!("browser close presentation notification failed");
-        }
+        let state = app.state::<BrowserState>();
+        state.close_tab_for_owner(app, owner, &tab_id)?;
+        let receipt = state.closed_receipt(&tab_id)?;
+        notify_closed(app, owner, &tab_id);
         Ok(receipt)
+    }
+
+    pub(super) fn retire(&self, app: &AppHandle, owner: &str) -> Result<(), String> {
+        let provisional = {
+            let pending = self.0.lock().map_err(|_| "browser lifecycle unavailable")?;
+            pending
+                .iter()
+                .filter(|(_, entry)| entry.owner == owner)
+                .map(|(id, entry)| {
+                    entry.cancelled.store(true, Ordering::SeqCst);
+                    format!("browser:{id}")
+                })
+                .collect::<Vec<_>>()
+        };
+        app.state::<BrowserState>()
+            .retire_owned(app, owner, &provisional)
+    }
+}
+
+pub(super) fn notify_closed(app: &AppHandle, owner: &str, tab_id: &str) {
+    if app
+        .emit_to(
+            "main",
+            "xharness-browser-owned-page",
+            json!({"owner":owner,"tabId":tab_id,"closed":true}),
+        )
+        .is_err()
+    {
+        eprintln!("browser close presentation notification failed");
     }
 }
 /// Legacy renderer receipts cannot complete or cancel service-owned operations.

@@ -607,12 +607,22 @@ async fn bridge_call(
     op: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    bridge_call_as(connection, owner, "webview", op, arguments).await
+}
+
+async fn bridge_call_as(
+    connection: &browser_bridge::Connection,
+    owner: &str,
+    backend: &str,
+    op: &str,
+    arguments: Value,
+) -> Result<Value, String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(&connection.address)
         .await
         .map_err(|_| "bridge connection failed")?;
     let request = serde_json::to_vec(
-        &json!({"token":connection.token,"owner":owner,"op":op,"arguments":arguments}),
+        &json!({"token":connection.token,"owner":owner,"backend":backend,"op":op,"arguments":arguments}),
     )
     .unwrap();
     stream

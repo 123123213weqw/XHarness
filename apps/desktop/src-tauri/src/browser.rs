@@ -115,8 +115,21 @@ struct BrowserInner {
     clock: u64,
 }
 
+impl BrowserInner {
+    fn detach_tab(&mut self, tab_id: &str) -> Option<BrowserTab> {
+        if self.active.as_deref() == Some(tab_id) {
+            self.active = None;
+        }
+        self.owner_tabs.retain(|_, id| id != tab_id);
+        self.tabs.remove(tab_id)
+    }
+}
+
 struct BrowserTab {
     webview: Webview,
+    // Keep lifetime ownership even after site access is revoked or another
+    // page becomes this chat's current action target.
+    lifetime_owner: Option<String>,
     last_used: u64,
     inspector: Arc<crate::browser_inspect::Inspector>,
     loaded: Arc<AtomicBool>,
@@ -295,10 +308,14 @@ impl BrowserState {
     }
     pub(super) fn bind_owner(&self, owner: &str, tab_id: &str) -> Result<(), String> {
         let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
-        let tab = inner.tabs.get(tab_id).ok_or("browser tab is not open")?;
+        let tab = inner
+            .tabs
+            .get_mut(tab_id)
+            .ok_or("browser tab is not open")?;
         if !tab.inspector.delegation.bound(owner) {
             return Err("browser ownership was not granted".into());
         }
+        tab.lifetime_owner = Some(owner.into());
         // Explicit revoke + rebind transfers lifetime ownership too. A former
         // owner must not retain the ability to close the new owner's page.
         inner
@@ -559,16 +576,21 @@ pub async fn desktop_browser_navigate(
     url: String,
 ) -> Result<(), String> {
     ensure_main(&caller)?;
-    navigate_page(app, caller, &state, tab_id, url, false).await
+    navigate_page(app, caller, &state, tab_id, url, None).await
 }
 
 /// Creation/readiness are service-owned; no pane activation or UI receipt.
-pub(super) async fn open_owned(app: &AppHandle, tab_id: String, url: String) -> Result<(), String> {
+pub(super) async fn open_owned(
+    app: &AppHandle,
+    tab_id: String,
+    url: String,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     let caller = app
         .get_webview("main")
         .ok_or("main renderer is unavailable")?;
     let state = app.state::<BrowserState>();
-    navigate_page(app.clone(), caller, &state, tab_id, url, true).await
+    navigate_page(app.clone(), caller, &state, tab_id, url, Some(cancelled)).await
 }
 
 fn background_layout() -> Result<viewport::Presentation, String> {
@@ -592,8 +614,9 @@ async fn navigate_page(
     state: &BrowserState,
     tab_id: String,
     url: String,
-    owned: bool,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<(), String> {
+    let owned = cancelled.is_some();
     #[cfg(not(target_os = "macos"))]
     let _ = &caller;
     if !valid_tab_id(&tab_id) {
@@ -605,13 +628,13 @@ async fn navigate_page(
     // Failure keeps the system default; it must not block ordinary navigation.
     #[cfg(target_os = "macos")]
     let user_agent = user_agent::for_macos(&caller).await;
-    // Before a navigation can enter native dispatch, record its admission.
-    // Closing/switching the pane after this point must not claim no effect.
-    if let Some(lifecycle) = app.try_state::<crate::browser_lifecycle::BrowserLifecycle>() {
-        lifecycle.mark_started(&tab_id);
-    }
     {
         let mut inner = state.0.lock().map_err(|_| "browser state unavailable")?;
+        // Retirement signals cancellation before detaching under this same
+        // registry lock, so a provisional tab cannot be inserted behind it.
+        if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err("browser creation cancelled during session retirement".into());
+        }
         if inner.tabs.contains_key(&tab_id) {
             inner.clock += 1;
             let clock = inner.clock;
@@ -800,6 +823,7 @@ async fn navigate_page(
             tab_id.clone(),
             BrowserTab {
                 webview: child,
+                lifetime_owner: None,
                 last_used,
                 inspector,
                 loaded,
@@ -993,33 +1017,86 @@ pub async fn desktop_browser_close(
 }
 impl BrowserState {
     pub(super) fn close_tab(&self, app: &AppHandle, tab_id: &str) -> Result<(), String> {
-        let tab = {
-            let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
-            if inner.active.as_deref() == Some(tab_id) {
-                inner.active = None;
-            }
-            inner.owner_tabs.retain(|_, id| id != tab_id);
-            inner.tabs.remove(tab_id)
-        };
-        // Native destruction may rendezvous with the UI thread. Do not hold the
-        // registry mutex across it; UI dispatch guards also inspect this registry.
+        let tab = self
+            .0
+            .lock()
+            .map_err(|_| "browser state unavailable")?
+            .detach_tab(tab_id);
         if let Some(tab) = tab {
-            tab.inspector.revoke();
-            trace(app, TraceEvent::Close, Some(tab.webview.label()));
-            let result = tab.webview.close();
-            trace(
-                app,
-                if result.is_ok() {
-                    TraceEvent::CloseAccepted
-                } else {
-                    TraceEvent::CloseFailed
-                },
-                Some(tab.webview.label()),
-            );
-            result.map_err(|error| error.to_string())?;
+            destroy_tab(app, tab)?;
         }
         Ok(())
     }
+
+    pub(super) fn close_tab_for_owner(
+        &self,
+        app: &AppHandle,
+        owner: &str,
+        tab_id: &str,
+    ) -> Result<(), String> {
+        let tab = {
+            let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
+            if inner.owner_tabs.get(owner).map(String::as_str) != Some(tab_id) {
+                return Err("browser ownership changed before close".into());
+            }
+            inner.detach_tab(tab_id).ok_or("browser tab is not open")?
+        };
+        destroy_tab(app, tab)
+    }
+
+    pub(super) fn retire_owned(
+        &self,
+        app: &AppHandle,
+        owner: &str,
+        provisional: &[String],
+    ) -> Result<(), String> {
+        let tabs = {
+            let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
+            let ids: Vec<_> = inner
+                .tabs
+                .iter()
+                .filter(|(id, tab)| match tab.lifetime_owner.as_deref() {
+                    Some(current) => current == owner,
+                    None => provisional.contains(id),
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| inner.detach_tab(&id).map(|tab| (id, tab)))
+                .collect::<Vec<_>>()
+        };
+        let mut failed = false;
+        for (id, tab) in tabs {
+            let was_ready = tab.lifetime_owner.is_some();
+            match destroy_tab(app, tab) {
+                Ok(()) if was_ready => crate::browser_lifecycle::notify_closed(app, owner, &id),
+                Ok(()) => {}
+                Err(_) => failed = true,
+            }
+        }
+        if failed {
+            return Err("native WebView cleanup not confirmed during session retirement".into());
+        }
+        Ok(())
+    }
+}
+
+fn destroy_tab(app: &AppHandle, tab: BrowserTab) -> Result<(), String> {
+    // Native destruction can rendezvous with the UI. The registry is already
+    // unlocked, and its exact tab has been removed before dispatch.
+    tab.inspector.revoke();
+    trace(app, TraceEvent::Close, Some(tab.webview.label()));
+    let result = tab.webview.close();
+    trace(
+        app,
+        if result.is_ok() {
+            TraceEvent::CloseAccepted
+        } else {
+            TraceEvent::CloseFailed
+        },
+        Some(tab.webview.label()),
+    );
+    result.map_err(|error| error.to_string())
 }
 
 pub fn close_all(app: &AppHandle) {
