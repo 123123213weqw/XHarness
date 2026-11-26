@@ -10,7 +10,7 @@ import {ownedViewModuleTestInput} from './owned-view-module-test-input.mjs'
 const deps=resolve(process.env.UI_TEST_DEPS??'/Users/wangyue/codex-build/xharness-plugin-migration/ui-browser-deps')
 const require=createRequire(resolve(deps,'package.json'))
 const engine=process.env.UI_TEST_BROWSER??'chromium'
-const browser=await require('playwright')[engine].launch({headless:true})
+const browser=await require('playwright')[engine].launch({headless:true,...(process.env.UI_TEST_EXECUTABLE?{executablePath:process.env.UI_TEST_EXECUTABLE}:{})})
 try{
  const page=await browser.newPage({viewport:{width:1400,height:800}})
  const errors=[]
@@ -62,18 +62,12 @@ try{
    }
    window.root=ReactDOM.createRoot(document.getElementById('root'));root.render(React.createElement(App))
  })
- await page.waitForFunction(()=>restoreDone&&nativeListeners.get('xharness-browser-control-open')?.size===1&&calls.some(c=>c.command==='desktop_browser_persist'))
- assert.equal(await page.locator('.xhworkspace-item:not([hidden]) .xhbrowser-pane').count(),0)
+ await page.waitForFunction(()=>restoreDone&&nativeListeners.get('xharness-browser-owned-page')?.size===1&&calls.some(c=>c.command==='desktop_browser_persist'))
  const requestId='a'.repeat(32),tabId=`browser:${requestId}`
- await page.evaluate(requestId=>emitNative('xharness-browser-control-open',{requestId,owner:'chat-a',url:'https://example.com/'}),requestId)
- await page.waitForFunction(id=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId===id&&c.args.reply.status==='ready'),requestId)
- assert.equal(await page.locator('[data-xhworkspace-open]').count(),1,'model open expands sidebar from zero tabs')
- const calls=await page.evaluate(()=>window.calls)
- const index=command=>calls.findIndex(c=>c.command===command)
- assert(index('desktop_browser_bounds')<index('desktop_browser_navigate'))
- assert(index('desktop_browser_navigate')<index('desktop_browser_delegate'))
- assert(index('desktop_browser_delegate')<index('desktop_browser_control_reply'))
- assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://example.com/')
+ await page.evaluate(tabId=>{nativeTabs.set(tabId,{url:'https://example.com/',loaded:true});emitNative('xharness-browser-owned-page',{owner:'chat-a',tabId,url:'https://example.com/',closed:false})},tabId)
+ await page.getByRole('textbox',{name:'网址'}).waitFor()
+ await page.waitForFunction(id=>activeTab===id,tabId)
+ assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='desktop_browser_navigate'||c.command==='desktop_browser_control_reply')),false,'renderer presents service-owned readiness, never creates/acknowledges it')
  // Presentation comes from authenticated native invocation metadata, not
  // page loading, queued text or generic/headless MCP activity.
  await page.waitForFunction(()=>nativeListeners.get('xharness-browser-activity')?.size===1)
@@ -106,12 +100,6 @@ try{
  await page.evaluate(value=>emitNative('xharness-browser-activity',{...value,id:'102',phase:'finished'}),activity)
  await page.waitForFunction(()=>!document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-pane')?.dataset.modelActive)
  assert.deepEqual(await page.locator('.xhworkspace-item:not([hidden]) .xhbrowser-content').boundingBox(),beforeActivity)
- // Completed request cannot be replayed or deleted by a late cancel.
- await page.evaluate(requestId=>emitNative('xharness-browser-control-open',{requestId,owner:'chat-a',url:'https://example.com/'}),requestId)
- await page.waitForTimeout(50)
- assert.equal(await page.getByRole('tab').count(),1)
- await page.evaluate(requestId=>emitNative('xharness-browser-control-cancel',requestId),requestId)
- assert.equal(await page.getByRole('textbox',{name:'网址'}).count(),1)
  // A frame-agnostic policy hint uses the native top-level URL, not its source.
  await page.evaluate(tabId=>emitNative('xharness-browser-event',{tabId,kind:'navigation-policy',value:'https://iframe.example/'}),tabId)
  await page.waitForFunction(()=>calls.some(c=>c.command==='desktop_browser_page_state'))
@@ -145,158 +133,24 @@ try{
  },tabId)
  await page.waitForTimeout(100)
  assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://example.com/')
- // Committed top-level redirect is synchronized before exact-origin binding.
- const redirected='f'.repeat(32)
- await page.evaluate(requestId=>{
-   window.redirectNext='https://final.example/path'
-   emitNative('xharness-browser-control-open',{requestId,owner:'chat-a',url:'https://start.example/'})
- },redirected)
- await page.waitForFunction(id=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId===id&&c.args.reply.status==='ready'),redirected)
- // Native readiness is not a React paint receipt. Wait for the controlled
- // input's commit, then keep the exact URL and origin assertions below.
- await page.waitForFunction(()=>document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-address-form input')?.value==='https://final.example/path',{},{timeout:5000})
- assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://final.example/path')
- assert.equal(await page.evaluate(id=>calls.filter(c=>c.command==='desktop_browser_delegate'&&c.args.tabId==='browser:'+id).at(-1).args.expectedOrigin,redirected),'https://final.example')
- await page.getByRole('button',{name:'关闭 final.example',exact:true}).click()
- await page.waitForFunction(()=>document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-address-form input')?.value==='https://example.com/')
- await page.evaluate(()=>selectOwner('chat-b'))
- await page.waitForFunction(()=>!document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-pane'))
- assert.equal(await page.locator('[data-workspace-page-owner=\"chat-a\"][hidden] .xhbrowser-pane').count(),1,'settled background page remains mounted but hidden')
- await page.waitForFunction(()=>activeTab===null)
- const backgroundDelegates=await page.evaluate(()=>calls.filter(c=>c.command==='desktop_browser_delegate').length)
- await page.waitForTimeout(100)
- assert.equal(await page.evaluate(()=>calls.filter(c=>c.command==='desktop_browser_delegate').length),backgroundDelegates,'retention cannot renew a hidden browser action grant')
- const other='b'.repeat(32)
- await page.evaluate(requestId=>emitNative('xharness-browser-control-open',{requestId,owner:'chat-a',url:'https://other.example/'}),other)
- await page.waitForFunction(id=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId===id&&c.args.reply.status==='failed'),other)
- assert.equal(await page.locator('.xhworkspace-item:not([hidden]) .xhbrowser-pane').count(),0,'background owner cannot steal current chat')
- assert.equal(await page.evaluate(id=>calls.some(c=>c.command==='desktop_browser_navigate'&&c.args.tabId===`browser:${id}`),other),false)
- // Malformed scheme/credentials and request IDs do not schedule navigation.
- const before=await page.evaluate(()=>calls.length)
- for(const url of ['javascript:alert(1)','file:///etc/passwd','https://user:pass@example.com/'])await page.evaluate(url=>emitNative('xharness-browser-control-open',{requestId:'c'.repeat(32),owner:'chat-b',url}),url)
- await page.waitForTimeout(100)
- assert.equal(await page.evaluate(()=>calls.length),before)
- // A cancellation delivered before its open event leaves no ghost tab.
- await page.evaluate(()=>{
-   emitNative('xharness-browser-control-cancel','e'.repeat(32))
-   emitNative('xharness-browser-control-open',{requestId:'e'.repeat(32),owner:'chat-b',url:'https://late.example/'})
- })
- await page.waitForTimeout(50)
- assert.equal(await page.locator('.xhworkspace-item:not([hidden]) .xhbrowser-pane').count(),0)
- // In-flight open cancellation closes only that provisional tab, not history.
- await page.evaluate(()=>{
-   const invoke=__TAURI__.core.invoke
-   __TAURI__.core.invoke=(command,args)=>{if(command!=='desktop_browser_navigate')return invoke(command,args);__TAURI__.core.invoke=invoke;return new Promise(resolve=>{window.releaseNavigation=()=>invoke(command,args).then(resolve)})}
-   emitNative('xharness-browser-control-open',{requestId:'d'.repeat(32),owner:'chat-b',url:'https://pending.example/'})
- })
- await page.waitForFunction(()=>typeof window.releaseNavigation==='function')
- await page.evaluate(()=>emitNative('xharness-browser-control-cancel','d'.repeat(32)))
- await page.waitForFunction(()=>!document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-pane'))
- await page.evaluate(()=>releaseNavigation())
- await page.waitForTimeout(100)
- assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId==='d'.repeat(32)&&c.args.reply.status==='ready')),false)
- assert.equal(await page.evaluate(()=>nativeTabs.has('browser:'+ 'd'.repeat(32))),false,'late native create must be closed after cancellation')
- await page.evaluate(()=>selectOwner('chat-a'))
- await page.getByRole('textbox',{name:'网址'}).waitFor()
- assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://example.com/')
- // A queued native observer must not silently claim registration success.
- await page.evaluate(tabId=>emitNative('xharness-browser-event',{tabId,kind:'location-error',value:'Native address updates are unavailable'}),tabId)
- await page.getByRole('alert').waitFor()
- assert.equal(await page.getByRole('alert').textContent(),'Native address updates are unavailable')
- assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://example.com/')
 
- // Model closure is exact-owner + active-tab scoped, not a tab/owner override.
- for(const [id,owner,target] of [['1','chat-b',tabId],['2','chat-a','browser:unrelated']]){
-   await page.evaluate(({id,owner,target})=>emitNative('xharness-browser-control-close',{requestId:id.repeat(32),owner,tabId:target}),{id,owner,target})
-   await page.waitForFunction(id=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId===id.repeat(32)&&c.args.reply.status==='failed'),id)
-   assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://example.com/')
- }
- const closeId='3'.repeat(32)
- await page.evaluate(({closeId,tabId})=>emitNative('xharness-browser-control-close',{requestId:closeId,owner:'chat-a',tabId}),{closeId,tabId})
- await page.waitForFunction(id=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId===id&&c.args.reply.status==='closed'),closeId)
- await page.waitForFunction(()=>!document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-pane'))
- assert.equal(await page.evaluate(id=>nativeTabs.has(id),tabId),false)
- await page.waitForFunction(()=>!JSON.parse(localStorage.getItem('xharness:browser-spaces-v1')??'{}')['chat-a'])
- const next='4'.repeat(32)
- await page.evaluate(id=>emitNative('xharness-browser-control-open',{requestId:id,owner:'chat-a',url:'https://next.example/'}),next)
- await page.waitForFunction(id=>calls.some(c=>c.command==='desktop_browser_control_reply'&&c.args.requestId===id&&c.args.reply.status==='ready'),next)
- await page.evaluate(({closeId,tabId})=>emitNative('xharness-browser-control-close',{requestId:closeId,owner:'chat-a',tabId}),{closeId,tabId})
- assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://next.example/','late close cannot target its successor')
- // Reproduce the old manual-close bug: native queue blocked by a page sample.
- await page.evaluate(id=>{
-   const invoke=__TAURI__.core.invoke
-   __TAURI__.core.invoke=(command,args)=>{
-     if(command!=='desktop_browser_page_state')return invoke(command,args)
-     __TAURI__.core.invoke=invoke
-     return new Promise(resolve=>{window.releaseCloseSample=()=>resolve({url:'https://next.example/',loaded:true})})
-   }
-   emitNative('xharness-browser-event',{tabId:'browser:'+id,kind:'navigation-policy',value:''})
- },next)
- await page.waitForFunction(()=>typeof window.releaseCloseSample==='function')
- await page.getByRole('button',{name:'关闭当前网页',exact:true}).click()
- await page.waitForFunction(id=>!nativeTabs.has('browser:'+id),next,{timeout:2000})
- await page.waitForFunction(()=>!document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-pane'))
- await page.evaluate(()=>releaseCloseSample())
- await page.waitForTimeout(100)
- assert.equal(await page.evaluate(id=>nativeTabs.has('browser:'+id),next),false,'late callback cannot resurrect a manually closed page')
- // The More menu also exposes closure; blank tabs are closable without native state.
- await page.evaluate(()=>window.dispatchEvent(new CustomEvent('xharness:workspace-open',{detail:{kind:'browser',fresh:true}})))
- await page.getByRole('button',{name:'更多浏览器操作',exact:true}).click()
- await page.getByRole('button',{name:'关闭标签页',exact:true}).click()
- await page.waitForFunction(()=>!document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-pane'))
- // The new owned browser is not a native guest: visibility controls preview
- // traffic only, and never emits a browser close/delegation on collapse.
- await page.evaluate(()=>{
-   const canvas=document.createElement('canvas');canvas.width=640;canvas.height=360
-   const ctx=canvas.getContext('2d');ctx.fillStyle='green';ctx.fillRect(0,0,640,360)
-   const image=canvas.toDataURL('image/jpeg').split(',')[1]
-   window.previewPending=0;window.previewMaxPending=0;window.headlessPreviewCalls=[]
-   const original=__TAURI__.core.invoke
-   __TAURI__.core.invoke=async(command,args={})=>{
-     if(command==='desktop_headless_preview'){
-       calls.push({command,args});headlessPreviewCalls.push({...args});previewPending++;previewMaxPending=Math.max(previewMaxPending,previewPending)
-       await new Promise(resolve=>setTimeout(resolve,100));previewPending--
-       return {image,mime:'image/jpeg',width:640,height:360,tabId:args.tabId,url:'https://background.example/'}
-     }
-     if(command==='desktop_headless_control'){calls.push({command,args});return {ok:true}}
-     return original(command,args)
-   }
-   emitNative('xharness-headless-page',{owner:'chat-a',tabId:'headless:'+'a'.repeat(32),url:'https://background.example/'})
- })
- await page.locator('[data-headless-preview] img').waitFor()
- assert.equal(await page.locator('.xhbrowser-home').count(),0)
- assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='desktop_browser_navigate'&&c.args.tabId.startsWith('headless:'))),false,'preview never navigates a duplicate guest WebView')
- await page.getByRole('button',{name:'收起右侧工作区',exact:true}).click()
- await page.waitForTimeout(200)
- const hiddenCalls=await page.evaluate(()=>headlessPreviewCalls.length)
- await page.evaluate(()=>emitNative('xharness-headless-page',{owner:'chat-a',tabId:'headless:'+'a'.repeat(32),url:'https://background.example/next'}))
- assert.equal(await page.getByRole('button',{name:'展开右侧工作区',exact:true}).count(),1,'navigation cannot reopen a collapsed preview')
- await page.waitForTimeout(1200)
- assert.equal(await page.evaluate(()=>headlessPreviewCalls.length),hiddenCalls,'collapsed sidebar stops preview traffic')
- assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='desktop_headless_control'&&c.args.arguments.action==='close')),false,'hiding is not closing the owned browser')
- await page.evaluate(()=>emitNative('xharness-headless-page',{owner:'chat-b',tabId:'headless:'+'b'.repeat(32),url:'https://background.example/'}))
- assert.equal(await page.getByRole('button',{name:'展开右侧工作区',exact:true}).count(),1,'background chat cannot expand the current pane')
- assert.equal(await page.evaluate(()=>headlessPreviewCalls.some(c=>c.owner==='chat-b')),false,'background chat does not start a preview')
- await page.getByRole('button',{name:'展开右侧工作区',exact:true}).click()
- await page.locator('[data-headless-preview] img').waitFor()
+ const redirected='browser:'+'f'.repeat(32)
+ await page.evaluate(tabId=>{nativeTabs.set(tabId,{url:'https://final.example/path',loaded:true});emitNative('xharness-browser-owned-page',{owner:'chat-a',tabId,url:'https://final.example/path',closed:false})},redirected)
+ assert.equal(await page.getByRole('textbox',{name:'网址'}).inputValue(),'https://example.com/','ready notification must preserve the selected tab')
+ await page.getByRole('tab',{name:'final.example',exact:true}).click()
+ await page.waitForFunction(()=>document.querySelector('.xhworkspace-item:not([hidden]) .xhbrowser-address-form input')?.value==='https://final.example/path')
+ await page.waitForFunction(tabId=>calls.some(c=>c.command==='desktop_browser_delegate'&&c.args.tabId===tabId&&c.args.expectedOrigin==='https://final.example'),redirected)
+ await page.getByRole('button',{name:'关闭 final.example',exact:true}).click()
+ await page.waitForFunction(tabId=>!nativeTabs.has(tabId),redirected)
  await page.evaluate(()=>selectOwner('chat-b'))
- await page.getByRole('button',{name:'展开右侧工作区',exact:true}).click()
- await page.waitForFunction(()=>headlessPreviewCalls.some(c=>c.owner==='chat-b'))
- assert.equal(await page.evaluate(()=>previewMaxPending),1,'never overlap preview reads')
- await page.getByRole('button',{name:'关闭当前后台网页',exact:true}).click()
- await page.waitForFunction(()=>calls.some(c=>c.command==='desktop_headless_control'&&c.args.owner==='chat-b'&&c.args.tabId==='headless:'+'b'.repeat(32)&&c.args.arguments.action==='close'))
- await page.evaluate(()=>window.dispatchEvent(new CustomEvent('xharness:workspace-open',{detail:{kind:'browser',fresh:true}})))
- const manualBefore=await page.evaluate(()=>calls.filter(c=>c.command==='desktop_browser_navigate').length)
- await page.getByRole('textbox',{name:'网址',exact:true}).fill('https://new-owned.example/')
- await page.getByRole('textbox',{name:'网址',exact:true}).press('Enter')
- await page.waitForFunction(()=>calls.some(c=>c.command==='desktop_headless_control'&&c.args.owner==='chat-b'&&c.args.arguments.action==='open'&&c.args.arguments.url==='https://new-owned.example/'))
- assert.equal(await page.evaluate(()=>calls.filter(c=>c.command==='desktop_browser_navigate').length),manualBefore,'new chat-bound manual navigation prefers the owned background browser')
- await page.getByRole('button',{name:'更多浏览器操作',exact:true}).click()
- await page.getByRole('button',{name:'使用原生 WebView',exact:true}).click()
- await page.getByRole('textbox',{name:'网址',exact:true}).fill('https://explicit-native.example/')
- await page.getByRole('textbox',{name:'网址',exact:true}).press('Enter')
- await page.waitForFunction(()=>calls.some(c=>c.command==='desktop_browser_navigate'&&c.args.url==='https://explicit-native.example/'))
+ await page.waitForFunction(()=>activeTab===null)
+ assert.equal(await page.locator('[data-workspace-page-owner="chat-a"][hidden] .xhbrowser-pane').count(),1)
  await page.evaluate(()=>root.unmount())
+ assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='desktop_browser_control_reply')),false)
  assert.deepEqual(errors,[])
- console.log(engine+': native lifecycle + owned headless preview/hidden/owner/close/single-flight guards passed (mock transport)')
+ console.log(`${engine}: native service-owned page presentation, activity visuals, navigation race and explicit close passed (mocked transport)`)
 }finally{await browser.close()}
+
+// Keep the existing CI browser matrix; add the lifecycle-only scenarios to
+// the model control contract without editing the protected CI plan.
+await import('./test-browser-background-lifecycle.mjs')

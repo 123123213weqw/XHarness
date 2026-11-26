@@ -7,7 +7,7 @@ set -euo pipefail
 }
 cd "$(dirname "$0")/../.."
 mkdir -p docs/evidence
-node --test scripts/browser_use/evidence-gate.test.mjs
+node --test scripts/browser_use/evidence-gate.test.mjs scripts/browser_use/container-lifecycle.test.mjs
 npm ci --prefix plugins/browser-use --ignore-scripts --no-audit --no-fund
 rm -rf plugins/browser-use/dist
 npm run build --prefix plugins/browser-use

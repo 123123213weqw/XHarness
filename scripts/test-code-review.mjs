@@ -37,7 +37,7 @@ test('retired feature is absent from product registry and cannot return through 
  for(const source of ['src/modules/code-review/index.tsx','src/modules/code-review/ReviewPanel.tsx','src/modules/code-review/cache.ts']){
   assert.throws(()=>assertProductionSources([source]),/Retired Code Review/)
  }
- assert.doesNotThrow(()=>assertProductionSources(['src/modules/assistant/index.tsx','src/modules/assistant/pull-reference.ts','src/modules/browser/file-display/diff.ts']))
+ assert.doesNotThrow(()=>assertProductionSources(['src/modules/browser/file-display/diff.ts']))
  assert.throws(()=>compileSourceModules(new URL('../ui',import.meta.url).pathname,[{id:'retired',source:'src/modules/code-review/index.tsx'}]),/Retired Code Review/)
  const graph=JSON.parse(readFileSync('ui/dist/client-graph.json','utf8'))
  assert.ok(!graph.entries.some(row=>row.id==='@xlang/xharness-client-ui-code-review'))
@@ -49,7 +49,7 @@ test('frame retains a single conversation, saved geometry and no retired center 
  for(const source of [frame,layout])assert.ok(!source.includes('review.center'))
  assert.ok(!frame.includes("centerPage === 'review'"));assert.ok(!frame.includes("centerPage !== 'review'"))
  assert.equal((frame.match(/renderSlot\('conversation', \{\}\)/g)??[]).length,1)
- assert.match(frame,/showConversation:setAssistantVisible/);assert.match(frame,/showConversation:setSwarmVisible/)
+ assert.doesNotMatch(frame,/assistant.center|setAssistantVisible/);assert.match(frame,/showConversation:setSwarmVisible/)
  assert.ok(!frame.includes('setSidebar(56)'));assert.ok(!frame.includes('data-xharness-review-nav'))
 })
 test('native composition no longer wires review storage; tombstone precedes generic GitHub access',()=>{

@@ -2,7 +2,9 @@
 .xh-message-rail {
   position: absolute;
   z-index: 6;
-  top: 50%;
+  /* The rail is portaled into the conversation root, not the scroll body.
+     Center it above the sticky composer, including approvals and stats. */
+  top: max(0px, calc((100% - var(--dsh-composer-height, 0px)) / 2));
   /* Ride the message column's left edge (8px gap) so tool output and turn
      process sit directly beside the rail, like the terminal timeline. */
   left: max(8px, calc(50% - var(--dsh-chat-content-width) / 2 - 32px));
@@ -11,7 +13,7 @@
   flex-direction: column;
   align-items: center;
   width: 24px;
-  max-height: min(70%, 480px);
+  max-height: min(70%, 480px, max(0px, calc(100% - var(--dsh-composer-height, 0px) - 32px)));
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;

@@ -325,13 +325,23 @@ mod live {
         let requests = captured.lock().unwrap().clone();
         assert_eq!(reason, TurnEndReason::Completed);
         assert_eq!(requests.len(), 4, "unexpected generation count");
+        // This transcript is from the loopback fixture only. Preserve the exact
+        // tool failure on CI instead of reporting just three Error variants.
+        let tool_receipts: Vec<_> = requests[3]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .map(|message| (&message["tool_call_id"], &message["content"]))
+            .collect();
         assert_eq!(
             outcomes,
             [
                 ToolOutcome::Success,
                 ToolOutcome::Success,
                 ToolOutcome::Error
-            ]
+            ],
+            "unexpected loopback browser receipts: {tool_receipts:?}"
         );
         for body in &requests {
             let text = body.to_string();

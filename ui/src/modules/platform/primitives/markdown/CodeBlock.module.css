@@ -18,8 +18,12 @@
   margin-bottom: 11px;
 }
 
+/* The banner sticks only where the owner of the nearest scroll container opts
+   in with --dsl-code-block-banner-position: sticky (file and detail panes,
+   cards with their own inner scroll). In page-level flow such as the chat
+   transcript a sticky bar slides over the very lines it belongs to. */
 .bannerWrap {
-  position: sticky;
+  position: var(--dsl-code-block-banner-position, static);
   top: 0;
   z-index: 6;
   background-color: var(--dsw-alias-bg-base);

@@ -86,3 +86,29 @@ fn browser_discovery_pins_numeric_loopback_and_rejects_foreign_paths() {
         assert!(parse_port_file(invalid).is_none(), "{invalid}");
     }
 }
+
+#[tokio::test]
+async fn standalone_has_no_trusted_desktop_surface() {
+    use super::Browsers;
+    use serde_json::json;
+    let standalone = Browsers::standalone();
+    let owner = "fixture";
+    assert_eq!(
+        standalone.status(owner).await["capabilities"]["human_takeover"],
+        false
+    );
+    assert_eq!(
+        Browsers::default().status(owner).await["capabilities"]["human_takeover"],
+        true
+    );
+    assert!(standalone
+        .open_from_shell(owner, "https://example.invalid".into())
+        .await
+        .is_err());
+    assert!(standalone.preview(owner, "stale-tab").await.is_err());
+    assert!(standalone
+        .manual(owner, "stale-tab", json!({"action":"status"}))
+        .await
+        .is_err());
+    assert!(standalone.sessions.lock().await.is_empty());
+}

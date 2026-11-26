@@ -408,6 +408,44 @@ class CheckpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ,{'GITHUB_RUN_ATTEMPT':'2'}), self.assertRaises(release.TaskError):
             service.restore(Client(),Path(folder),'0.2.20','77',SHA)
 
+    def test_checkpoint_download_repeats_only_the_read_within_a_bound(self):
+        import subprocess
+        class Client:
+            repo=REPO
+            def pages(self,*_):return [dict(name='release-task-0.2.20-77-2-000002',expired=False,workflow_run=dict(head_sha=SHA))]
+        state={'checkpoint_test_only':True,'source_sha':SHA,'revision':2}
+        for failures, recovered in [(0,True),(2,True),(service.DOWNLOAD_ATTEMPTS - 1,True),
+                                    (service.DOWNLOAD_ATTEMPTS,False),(40,False)]:
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as folder:
+                calls, delays = [], []
+                def download(arguments, **options):
+                    calls.append((arguments, options))
+                    target = Path(arguments[arguments.index('--dir') + 1])
+                    target.mkdir(parents=True, exist_ok=True)
+                    # An interrupted attempt leaves a partial file behind.
+                    if len(calls) <= failures:
+                        (target / 'partial.bin').write_bytes(b'x')
+                        raise subprocess.CalledProcessError(1, arguments, stderr='PRIVATE TOKEN (HTTP 503)')
+                    (target / 'task.json').write_text(json.dumps(state))
+                    return subprocess.CompletedProcess(arguments, 0)
+                with patch.object(service.subprocess, 'run', side_effect=download), \
+                     patch.object(service.shutil, 'rmtree', wraps=service.shutil.rmtree) as wipe:
+                    if recovered:
+                        self.assertEqual(service.restore(Client(), Path(folder), '0.2.20', '77', SHA, sleep=delays.append), state)
+                        failure = None
+                    else:
+                        with self.assertRaises(release.TransportError) as failure:
+                            service.restore(Client(), Path(folder), '0.2.20', '77', SHA, sleep=delays.append)
+                self.assertEqual(len(calls), min(failures, service.DOWNLOAD_ATTEMPTS) + (1 if recovered else 0))
+                # Every attempt but the last one is followed by a growing backoff.
+                self.assertEqual(delays, [service.DOWNLOAD_BACKOFF * attempt for attempt in range(1, len(calls))])
+                self.assertTrue(all(options.get('timeout') == service.DOWNLOAD_TIMEOUT for _, options in calls))
+                # Every attempt, the first included, starts from an empty directory.
+                self.assertEqual(wipe.call_count, len(calls))
+                if failure is not None:
+                    self.assertIn(f'after {service.DOWNLOAD_ATTEMPTS} attempts (CalledProcessError)', str(failure.exception))
+                    self.assertNotIn('PRIVATE', str(failure.exception))
+
 
 class GraphTests(unittest.TestCase):
     def test_no_worker_aggregate_cycle_and_candidate_upload_precedes_native_work(self):

@@ -9,5 +9,4 @@ export { removeProviderProfile, needsSetup, ModelsSection } from './ModelsSectio
 export { ModelListEditor, adopt } from './ModelListEditor'
 export { CustomProviderCard } from './CustomProviderCard'
 
-export {saveManagedAccess} from './ManagedAccount'
 export { reasoningRecipe, applyReasoningRecipe, supportsReasoningRecipes } from './reasoning-presets'

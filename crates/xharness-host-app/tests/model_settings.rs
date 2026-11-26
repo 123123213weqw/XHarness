@@ -133,6 +133,238 @@ async fn add(host: &BasicHost, p: Value) -> Value {
 }
 
 #[tokio::test]
+async fn retired_account_restore_is_inert_and_keeps_history_and_byok() {
+    use xharness_control::{ControlEvent, MutationReceipt, SettingsSnapshot};
+    use xharness_host::RETIRED_ACCOUNT_CREDENTIAL;
+    use xharness_session::{EventData, Message, SessionHeader, TurnEndReason};
+
+    #[derive(Default)]
+    struct RetiredKeyTrap(TestCredentials);
+    #[async_trait]
+    impl CredentialStore for RetiredKeyTrap {
+        async fn get(&self, reference: &str) -> Result<Option<String>, String> {
+            assert_ne!(
+                reference, RETIRED_ACCOUNT_CREDENTIAL,
+                "must not read old token"
+            );
+            self.0.get(reference).await
+        }
+        async fn set(&self, reference: &str, value: &str) -> Result<(), String> {
+            assert_ne!(
+                reference, RETIRED_ACCOUNT_CREDENTIAL,
+                "must not store old token"
+            );
+            self.0.set(reference, value).await
+        }
+        async fn delete(&self, reference: &str) -> Result<(), String> {
+            assert_ne!(
+                reference, RETIRED_ACCOUNT_CREDENTIAL,
+                "must not erase old token"
+            );
+            self.0.delete(reference).await
+        }
+    }
+
+    let dir = TempDir::new();
+    let retired_server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let retired_url = format!("http://{}/v1", retired_server.local_addr().unwrap());
+    let base_url = "http://127.0.0.1:12345/v1";
+    let mut retired = profile(&retired_url);
+    retired["apiKeyEnv"] = json!(RETIRED_ACCOUNT_CREDENTIAL);
+    retired["models"][0]["contextWindow"] = Value::Null;
+    let user = json!({"providers":{
+        "xharness-managed":retired,
+        "old-alias":retired,
+    }});
+    let control = JsonlControlStore::new(dir.0.join("control")).unwrap();
+    control
+        .append(
+            control.load().await.unwrap().revision(),
+            vec![
+                ControlEvent::SettingsSet {
+                    settings: SettingsSnapshot {
+                        namespace: MODEL_SETTINGS_NAMESPACE.to_owned(),
+                        user: user.clone(),
+                        value: user.clone(),
+                        revision: 1,
+                    },
+                },
+                ControlEvent::MutationCommitted {
+                    receipt: MutationReceipt {
+                        rpc_id: "old-account-import".into(),
+                        method: "settings.mutate".into(),
+                        fingerprint: "0".repeat(64),
+                        response: json!({}),
+                    },
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    let id = "xharness-global-assistant-v1";
+    let sessions: Arc<dyn Store> = Arc::new(MemorySessionStore::default());
+    let mut header = SessionHeader::new(id);
+    header.cwd = Some(dir.0.to_string_lossy().into_owned());
+    let old = sessions.create(header).await.unwrap();
+    sessions
+        .append(
+            id,
+            old.revision(),
+            vec![
+                EventData::SessionModelSelected {
+                    provider: "xharness-managed".into(),
+                    model: "coder".into(),
+                    reasoning_effort: None,
+                    context_window_tokens: None,
+                }
+                .into(),
+                EventData::TurnStart { turn: 1 }.into(),
+                EventData::UserMessage {
+                    message: Message::user("Existing assistant chat stays readable"),
+                    surface_replace: None,
+                }
+                .into(),
+                EventData::TurnEnd {
+                    turn: 1,
+                    reason: TurnEndReason::Completed,
+                }
+                .into(),
+            ],
+        )
+        .await
+        .unwrap();
+    let original = sessions.load(id).await.unwrap().unwrap();
+    let keys = Arc::new(RetiredKeyTrap::default());
+    keys.0
+        .set(RETIRED_ACCOUNT_CREDENTIAL, "old-test-value")
+        .await
+        .unwrap();
+    keys.0
+        .set("XHARNESS_SETTINGS_TEST_KEY", "byok-test-value")
+        .await
+        .unwrap();
+    let base = json!({"providers":{"test-gateway":profile(base_url)}});
+    let (host, runtime) = fixture_with_base(&dir, keys.clone(), sessions.clone(), base).await;
+    let history = rpc(&host, RpcMethod::SessionHistory, json!({"sessionId":id})).await;
+    assert!(history
+        .to_string()
+        .contains("Existing assistant chat stays readable"));
+    assert!(rpc(&host, RpcMethod::SessionList, json!({}))
+        .await
+        .to_string()
+        .contains(id));
+    let catalog = rpc(
+        &host,
+        RpcMethod::SessionModels,
+        json!({"sessionId":id,"refreshCapabilities":true}),
+    )
+    .await;
+    assert_eq!(catalog["current"]["provider"], "xharness-managed");
+    assert_eq!(catalog["routable"], false);
+    assert_eq!(catalog["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["groups"][0]["id"], "test-gateway");
+    assert!(catalog["failures"].as_array().unwrap().is_empty());
+    assert!(!runtime.can_route(&ModelRoute::new("old-alias", "coder")));
+    assert_eq!(
+        sessions.load(id).await.unwrap().unwrap().events(),
+        original.events()
+    );
+
+    let disabled = rpc(
+        &host,
+        RpcMethod::CredentialsDescribe,
+        json!({"refs":[RETIRED_ACCOUNT_CREDENTIAL]}),
+    )
+    .await;
+    assert_eq!(
+        disabled["credentials"][RETIRED_ACCOUNT_CREDENTIAL],
+        json!({"configured":false,"writable":false})
+    );
+    for (method, payload) in [
+        (
+            RpcMethod::CredentialsSet,
+            json!({"ref":RETIRED_ACCOUNT_CREDENTIAL,"value":"must-not-store"}),
+        ),
+        (
+            RpcMethod::CredentialsUnset,
+            json!({"ref":RETIRED_ACCOUNT_CREDENTIAL}),
+        ),
+        (
+            RpcMethod::LlmDiscoverModels,
+            json!({"settingsNs":MODEL_SETTINGS_NAMESPACE,"provider":"xharness-managed","baseURL":retired_url}),
+        ),
+        (
+            RpcMethod::LlmDiscoverModels,
+            json!({"settingsNs":MODEL_SETTINGS_NAMESPACE,"provider":"old-alias","baseURL":retired_url}),
+        ),
+        (
+            RpcMethod::SettingsMutate,
+            json!({"ns":MODEL_SETTINGS_NAMESPACE,"expectedRevision":1,"ops":[
+                {"op":"set","path":["providers","new-alias"],"value":retired}
+            ]}),
+        ),
+    ] {
+        let result = host
+            .call(
+                RpcId::new(format!("retired-{method}")),
+                method,
+                payload,
+                CancellationToken::new(),
+            )
+            .await;
+        let RpcResult::Failure { error } = result else {
+            panic!("retired operation succeeded: {method}")
+        };
+        assert!(
+            error.message.contains("account model service was retired"),
+            "{error:?}"
+        );
+    }
+    let still_configured = rpc(
+        &host,
+        RpcMethod::SettingsMutate,
+        json!({"ns":MODEL_SETTINGS_NAMESPACE,"expectedRevision":1,"ops":[
+            {"op":"set","path":["providers","test-gateway","displayName"],"value":"My gateway"}
+        ]}),
+    )
+    .await;
+    assert_eq!(still_configured["revision"], 2);
+    assert_eq!(
+        still_configured["user"]["providers"]["xharness-managed"],
+        user["providers"]["xharness-managed"]
+    );
+    assert_eq!(
+        keys.0
+            .get(RETIRED_ACCOUNT_CREDENTIAL)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("old-test-value")
+    );
+    rpc(
+        &host,
+        RpcMethod::SessionSelectModel,
+        json!({"sessionId":id,"provider":"test-gateway","model":"coder"}),
+    )
+    .await;
+    let resumed = rpc(&host, RpcMethod::SessionModels, json!({"sessionId":id})).await;
+    assert_eq!(resumed["routable"], true);
+    assert_eq!(resumed["current"]["provider"], "test-gateway");
+    let preserved = sessions.load(id).await.unwrap().unwrap();
+    assert!(preserved.events().starts_with(original.events()));
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            retired_server.accept()
+        )
+        .await
+        .is_err(),
+        "retired discovery and routing must make zero HTTP connections"
+    );
+}
+
+#[tokio::test]
 async fn search_settings_and_credentials_survive_restart_without_rebuilding_unrelated_models() {
     use futures::StreamExt;
     use xharness_host::WEB_SEARCH_SETTINGS_NAMESPACE;

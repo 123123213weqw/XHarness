@@ -1,5 +1,4 @@
 import {fixtureUiRoot} from './fixtures/ui-fixture-build.mjs'
-import {openAccountSettings} from './fixtures/open-account-settings.mjs'
 /** Entire generated graph and genuine platform/Core, using only built-in fixture transport. */
 import assert from 'node:assert/strict'
 import {readFileSync,existsSync,mkdirSync} from 'node:fs'
@@ -123,26 +122,24 @@ try{
   const sidebarSearch=document.querySelectorAll('button[aria-label="Search sessions"]')
   const sidebarSearchInput=document.querySelectorAll('input[placeholder="Search sessions..."]')
   const codeReviewEntry=document.querySelectorAll('button[data-xharness-review-nav][aria-label="Code Review"]')
-  const assistantEntry=document.querySelectorAll('button[data-xharness-assistant-nav][aria-label="Little X"]')
-  const accountEntry=document.querySelectorAll('button[data-xh-account-trigger][aria-label="Account & settings"]')
+  const assistantEntry=document.querySelectorAll('[data-xharness-assistant-nav]')
+  const accountEntry=document.querySelectorAll('[data-xh-account-trigger]')
+  const settingsEntry=[...document.querySelectorAll("button")].filter(button=>button.textContent.trim()==="Settings")
   const effortEntry=document.querySelectorAll('button[data-xh-model-control="effort"]')
   const environmentEntry=document.querySelectorAll('button[data-xh-runtime-environment][aria-label="Choose execution environment"]')
   const modelEntry=document.querySelectorAll('button[data-xh-model-control="model"]')
-  // Explicit product deltas: Tasks, Little X and removed Code Review/sidebar search.
+  // Explicit product deltas: Tasks and removed Code Review/sidebar search.
   // Count the removed controls independently; all other controls and exact
   // conversation pixels continue to use the untouched frozen reference.
   const shellNavigation=document.querySelectorAll('button[data-shell-navigation-back],button[data-shell-navigation-forward]')
   const copy=document.body.cloneNode(true)
   // Exact badge count/location asserted above; no other copy is removed.
   copy.querySelectorAll('.xhproject-github').forEach(node=>node.remove())
-  // Only the reviewed sidebar entry changes from a gear to account chrome.
-  // Keep its button count and all unrelated copy/pixels in frozen parity.
-  copy.querySelectorAll('button[data-xh-account-trigger]').forEach(node=>{node.textContent='Settings'})
   // Approved entry has separate exact counts; only its extra copy is projected.
   copy.querySelectorAll('button[data-xh-model-control="effort"]').forEach(node=>node.remove())
   copy.querySelectorAll('button[data-xh-runtime-environment][aria-label="Choose execution environment"]').forEach(node=>node.remove())
-  copy.querySelectorAll('[data-xharness-work-nav],.xhtask-trigger,button[aria-label="Search sessions"],button[data-xharness-review-nav][aria-label="Code Review"],button[data-xharness-assistant-nav][aria-label="Little X"],button[data-shell-navigation-back],button[data-shell-navigation-forward]').forEach(node=>node.remove())
-  return {environmentEntryCount:environmentEntry.length,effortEntryCount:effortEntry.length,modelEntryCount:modelEntry.length,accountEntryCount:accountEntry.length,text:document.body.innerText,stableText:copy.textContent.replace(/\s+/g,' ').trim(),buttons:document.querySelectorAll('button').length,shellNavigationCount:shellNavigation.length,projectBadgeCount:projectBadges.length,stableButtons:document.querySelectorAll('button').length-projectBadges.length-shellNavigation.length-navigation.length-sidebarSearch.length-codeReviewEntry.length-assistantEntry.length-effortEntry.length-environmentEntry.length,assistantEntryCount:assistantEntry.length,codeReviewEntryCount:codeReviewEntry.length,navigationCount:navigation.length,sidebarSearchEntryCount:sidebarSearch.length,sidebarSearchInputCount:sidebarSearchInput.length,inputs:document.querySelectorAll('textarea,[contenteditable="true"]').length}
+  copy.querySelectorAll('[data-xharness-work-nav],.xhtask-trigger,button[aria-label="Search sessions"],button[data-xharness-review-nav][aria-label="Code Review"],button[data-shell-navigation-back],button[data-shell-navigation-forward]').forEach(node=>node.remove())
+  return {environmentEntryCount:environmentEntry.length,effortEntryCount:effortEntry.length,modelEntryCount:modelEntry.length,accountEntryCount:accountEntry.length,settingsEntryCount:settingsEntry.length,text:document.body.innerText,stableText:copy.textContent.replace(/\s+/g,' ').trim(),buttons:document.querySelectorAll('button').length,shellNavigationCount:shellNavigation.length,projectBadgeCount:projectBadges.length,stableButtons:document.querySelectorAll('button').length-projectBadges.length-shellNavigation.length-navigation.length-sidebarSearch.length-codeReviewEntry.length-assistantEntry.length-effortEntry.length-environmentEntry.length,assistantEntryCount:assistantEntry.length,codeReviewEntryCount:codeReviewEntry.length,navigationCount:navigation.length,sidebarSearchEntryCount:sidebarSearch.length,sidebarSearchInputCount:sidebarSearchInput.length,inputs:document.querySelectorAll('textarea,[contenteditable="true"]').length}
  })
  // Interaction acceptance resumes naturally advancing timers; only the settled,
  // phase-bound boot receipt above is frozen. Navigation needs no manual ticks.
@@ -151,17 +148,18 @@ try{
  assert.equal(early.modelEntryCount,implementation==='source'?1:0,'source retains one authoritative model control')
  assert.equal(early.shellNavigationCount,implementation==='source'?2:0,'exactly the reviewed Back/Forward pair')
  assert.equal(early.codeReviewEntryCount,0,'retired Code Review must not register a sidebar control')
- assert.equal(early.assistantEntryCount,implementation==='source'?1:0,'Little X is one exact owned control, not a generic parity mask')
+ assert.equal(early.assistantEntryCount,0,'Little X does not register a sidebar control')
  assert.equal(early.environmentEntryCount,implementation==='source'?1:0,'exactly the reviewed typed execution-environment chip; frozen reference stays unchanged')
  assert.equal(early.sidebarSearchEntryCount,implementation==='source'?0:1,'removed search versus intact frozen positive control')
- assert.equal(early.accountEntryCount,implementation==='source'?1:0,'one reviewed account trigger replaces Settings; frozen control unchanged')
+ assert.equal(early.accountEntryCount,0,'the account menu is retired')
+ assert.equal(early.settingsEntryCount,1,'both surfaces expose exactly one Settings entry')
  assert.equal(early.sidebarSearchInputCount,implementation==='source'?0:1,'removed search field versus intact frozen positive control')
  assert.deepEqual(errors,[],'whole boot must not fail factory registration or real Core service injection')
  assert.ok(early.buttons>5,'actual workspace and conversation controls mounted')
  assert.ok(!/Failed to load plugins|Failed to start|缺少.*模块/.test(early.text),'no boot error screen')
  assert.ok(requests.some(path=>path.includes('/plugins/@xharness/dsh-client-connection/')),'built-in fixture uses actual connection module')
  assert.ok(!requests.some(path=>path.startsWith('/api/')),'isolated fixture never connects to a real Host')
- await openAccountSettings(page, {legacy:implementation==='legacy'})
+ await page.getByRole('button',{name:'Settings',exact:true}).click()
  await page.getByRole('button',{name:'General',exact:true}).waitFor()
  await page.getByRole('button',{name:'Models',exact:true}).click()
  await page.getByRole('button',{name:'Add provider',exact:true}).waitFor()
@@ -213,6 +211,7 @@ try{
  assert.deepEqual(staticFailures,[],'all full graph static requests complete')
  assert.ok(!requests.some(path=>path.includes('/@xlang/xharness-client-ui-code-review/')),'retired module must not load or prefetch in the full product graph')
 
+ assert.ok(!requests.some(path=>path.includes('/@xlang/xharness-client-ui-assistant/')),'retired Assistant must not load or prefetch')
  assert.deepEqual(errors,[],'navigation on the genuine full graph must not throw')
  console.log(JSON.stringify({engine,implementation,fullGraph:true,fixtureTransport:true,settingsProviders:true,modelEffortAndContextControls:true,effortChange:true,environmentEntryCount:early.environmentEntryCount,effortEntryCount:early.effortEntryCount,modelEntryCount:early.modelEntryCount,shellNavigationCount:early.shellNavigationCount,workCenterNavigation:implementation==='source',assistantEntryCount:early.assistantEntryCount,codeReviewEntryCount:early.codeReviewEntryCount,accountEntryCount:early.accountEntryCount,buttons:early.buttons,projectBadgeCount:early.projectBadgeCount,stableButtons:early.stableButtons,stableText:early.stableText,navigationCount:early.navigationCount,sidebarSearchEntryCount:early.sidebarSearchEntryCount,sidebarSearchInputCount:early.sidebarSearchInputCount,inputs:early.inputs,errors,staticFailures,fixtureHmrDisconnects:failed.filter(row=>new URL(row.url).pathname==='/plugins/events').length,text:early.text.slice(0,1000),loadedPluginPaths:requests.filter(path=>path.startsWith('/plugins/')&&path.endsWith('/client.js')).sort(),loadedPlugins:requests.filter(path=>path.startsWith('/plugins/')&&path.endsWith('/client.js')).length}))
 }finally{await browser.close()}

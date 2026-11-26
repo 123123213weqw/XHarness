@@ -323,10 +323,10 @@ jobs:
             scripts/ui-test-deps/package-lock.json
       - name: Install locked source UI toolchain
         run: npm ci --prefix ui --ignore-scripts
-      - name: Managed account source and IPC regressions
+      - name: Model settings and retired feature regressions
         run: |
           node --test scripts/test-settings-models-source.mjs
-          python3 scripts/test-managed-account-ipc.py
+          python3 scripts/test-retired-product-ipc.py
       - name: Install isolated locked browser test dependencies
         run: |
           mkdir -p "$RUNNER_TEMP/ui-tests"

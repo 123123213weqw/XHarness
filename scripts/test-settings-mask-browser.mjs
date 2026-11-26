@@ -1,5 +1,4 @@
 import {fixtureUiRoot} from './fixtures/ui-fixture-build.mjs'
-import {openAccountSettings} from './fixtures/open-account-settings.mjs'
 /** Full shipped graph: section changes never resize the settings card or modal/mask. */
 import assert from 'node:assert/strict'
 import {readFileSync, existsSync, mkdirSync} from 'node:fs'
@@ -25,7 +24,7 @@ try {
     return route.fulfill({body:readFileSync(local),contentType:types[extname(local)]??'application/octet-stream'})
   })
   await page.goto('http://127.0.0.1:39187/?fixture=1')
-  const settings=page.getByRole('button',{name:'Account & settings',exact:true})
+  const settings=page.getByRole('button',{name:'Settings',exact:true})
   await settings.waitFor()
 
   const evidence = process.env.UI_SETTINGS_MASK_RECEIPT_DIR
@@ -57,7 +56,7 @@ try {
     // No preference writes: the readiness fixture intentionally rejects saves.
     await page.emulateMedia({colorScheme:theme})
     await page.waitForFunction(want=>document.body.hasAttribute('data-ds-dark-theme')===want, theme==='dark')
-    await openAccountSettings(page); await dialog.waitFor()
+    await page.getByRole('button',{name:'Settings',exact:true}).click(); await dialog.waitFor()
     await dialog.getByRole('button',{name:'General',exact:true}).click()
     const expectedPaint=(await geometry()).paint
     const icons = await dialog.locator('nav button').evaluateAll(buttons => buttons.map(button => {
@@ -67,8 +66,9 @@ try {
         width:rect?.width,height:rect?.height,count:icon?.querySelectorAll('svg').length,
         ink:svg?getComputedStyle(svg).color:null,labelInk:getComputedStyle(button).color,shape:svg?.innerHTML}
     }))
+    assert.equal(icons.some(icon=>icon.kind==='account'),false,'no account settings entry remains')
     const expectedIcons = new Map([
-      ['General','general'],['Models','models'],['Account & model service','account'],['Profile','usage'],
+      ['General','general'],['Models','models'],['Profile','usage'],
       ['Archived chats','archive'],['Display & shortcuts','display'],['Installation statistics & privacy','installation'],
     ])
     if (existsSync(resolve('ui/src/modules/memory/index.tsx'))) expectedIcons.set('Memory','memory')
@@ -113,7 +113,7 @@ try {
         // Exercise the formerly exposed strip in every section, not only General.
         await page.mouse.click(width-2,height/2)
         await dialog.waitFor({state:'hidden'})
-        await openAccountSettings(page); await dialog.waitFor()
+        await page.getByRole('button',{name:'Settings',exact:true}).click(); await dialog.waitFor()
       }
     }
     await dialog.getByRole('button',{name:'Close',exact:true}).click()

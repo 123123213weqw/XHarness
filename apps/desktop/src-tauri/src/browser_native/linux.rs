@@ -12,14 +12,16 @@ pub fn input(
     use super::InputRequest;
     let view = handle.inner();
     let result = (|| {
-        if !view.is_visible() || !view.is_mapped() {
-            return Err("owned browser view is hidden".into());
-        }
         let window = view.window().ok_or("GTK view is unrealized")?;
         let seat = view
             .display()
             .default_seat()
             .ok_or("GDK seat unavailable")?;
+        // The offscreen host has an independent focus chain. This never
+        // activates or changes the visible main window's responder.
+        if !view.is_visible() || !view.is_mapped() {
+            return Err("owned GTK browser is not render-ready".into());
+        }
         view.grab_focus();
         match request {
             InputRequest::Click { x, y, .. } | InputRequest::Move { x, y, .. } => {
@@ -217,7 +219,117 @@ pub fn layout(
         view.set_margin_start(x.round() as i32);
         view.set_margin_top(y.round() as i32);
         view.set_size_request(width.round() as i32, height.round() as i32);
+        if !view.is_visible() {
+            if !view.is_realized() {
+                view.realize();
+            }
+            // Hidden widgets do not participate in the parent's allocation
+            // pass. Keep their own rendering viewport alive, without showing
+            // an input shield or changing the selected chat.
+            view.size_allocate(&gtk::Allocation::new(
+                0,
+                0,
+                width.round() as i32,
+                height.round() as i32,
+            ));
+        }
         overlay.queue_resize();
+        Ok(())
+    })();
+    let _ = reply.send(result);
+}
+
+// GTK does not dispatch pointer/key input to an unmapped widget. Background
+// pages remain mapped in a non-screen render host instead of being hidden in
+// the main window. The WebView/profile is unchanged; no engine migration.
+struct Parked {
+    home: gtk::Overlay,
+    host: gtk::OffscreenWindow,
+    margin: (i32, i32),
+}
+thread_local! {
+    static PARKED: std::cell::RefCell<std::collections::HashMap<usize, Parked>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+pub fn present(handle: PlatformWebview, visible: bool, reply: Sender<Result<(), String>>) {
+    let result = (|| {
+        let view = handle.inner();
+        let key = view.as_ptr() as usize;
+        if visible {
+            let parking = PARKED.with(|all| {
+                all.borrow()
+                    .get(&key)
+                    .map(|p| (p.home.clone(), p.host.clone(), p.margin))
+            });
+            if let Some((home, host, margin)) = parking {
+                if view
+                    .parent()
+                    .is_some_and(|p| p == host.clone().upcast::<gtk::Widget>())
+                {
+                    view.hide();
+                    host.remove(&view);
+                    home.add_overlay(&view);
+                    view.set_margin_start(margin.0);
+                    view.set_margin_top(margin.1);
+                    host.hide();
+                }
+            }
+            return Ok(());
+        }
+        let exists = PARKED.with(|all| all.borrow().contains_key(&key));
+        if !exists {
+            let home = view
+                .parent()
+                .ok_or("background browser is detached")?
+                .downcast::<gtk::Overlay>()
+                .map_err(|_| "background browser layout unavailable")?;
+            if home.widget_name() != "xharness-browser-overlay" {
+                return Err("unowned background browser layout".into());
+            }
+            let host = gtk::OffscreenWindow::new();
+            PARKED.with(|all| {
+                all.borrow_mut().insert(
+                    key,
+                    Parked {
+                        home,
+                        host,
+                        margin: (0, 0),
+                    },
+                )
+            });
+            view.connect_destroy(move |_| {
+                let parking = PARKED.with(|all| all.borrow_mut().remove(&key));
+                if let Some(parking) = parking {
+                    parking.host.close();
+                }
+            });
+        }
+        let (home, host, _) = PARKED
+            .with(|all| {
+                all.borrow()
+                    .get(&key)
+                    .map(|p| (p.home.clone(), p.host.clone(), p.margin))
+            })
+            .ok_or("background host unavailable")?;
+        if view
+            .parent()
+            .is_some_and(|p| p == home.clone().upcast::<gtk::Widget>())
+        {
+            let (width, height) = view.size_request();
+            let margin = (view.margin_start(), view.margin_top());
+            PARKED.with(|all| {
+                if let Some(p) = all.borrow_mut().get_mut(&key) {
+                    p.margin = margin;
+                }
+            });
+            view.hide();
+            home.remove(&view);
+            view.set_margin_start(0);
+            view.set_margin_top(0);
+            host.set_size_request(width.max(1), height.max(1));
+            host.add(&view);
+        }
+        view.show();
+        host.show();
         Ok(())
     })();
     let _ = reply.send(result);

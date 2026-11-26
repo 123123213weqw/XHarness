@@ -1,4 +1,5 @@
-//! Tauri presentation adapters; browser processes and commands live in the shared runtime.
+//! Trusted desktop IPC for the shared chat-owned browser.
+#![forbid(unsafe_code)]
 use serde_json::{json, Value};
 pub use xharness_browser::{installed_available, run_helper, Browsers};
 
@@ -11,6 +12,17 @@ pub async fn desktop_headless_preview(
 ) -> Result<Value, String> {
     crate::browser::ensure_main(&caller)?;
     state.preview(&owner, &tab_id).await
+}
+#[tauri::command]
+pub async fn desktop_headless_manual(
+    caller: tauri::Webview,
+    state: tauri::State<'_, Browsers>,
+    owner: String,
+    tab_id: String,
+    arguments: Value,
+) -> Result<Value, String> {
+    crate::browser::ensure_main(&caller)?;
+    state.manual(&owner, &tab_id, arguments).await
 }
 #[tauri::command]
 pub async fn desktop_headless_control(
@@ -36,7 +48,15 @@ pub async fn desktop_headless_control(
             )
             .await?
     } else {
-        state.dispatch(&owner, "control", arguments).await?
+        match serde_json::from_value(arguments).map_err(|_| "invalid browser control arguments")? {
+            xharness_browser::ControlRequest::Open { url } => {
+                state.open_from_shell(&owner, url).await?
+            }
+            xharness_browser::ControlRequest::Status {} => state.status(&owner).await,
+            xharness_browser::ControlRequest::Close {} => {
+                return Err("explicit close requires its exact tab".into())
+            }
+        }
     };
     if result["ok"] == true {
         let _ = app.emit_to(

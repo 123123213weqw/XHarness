@@ -1,5 +1,5 @@
-//! Ephemeral chat/page binding belongs to the native tab, not model args.
-//! One exact session and origin; model calls still use the Host approval policy.
+//! Chat/page ownership is independent of presentation. Execution leases are
+//! renewed by the authenticated Host, never by the selected sidebar alone.
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -43,16 +43,46 @@ impl Delegation {
         {
             return Err("only a credential-free web origin may be delegated".into());
         }
-        *self
+        let mut slot = self
             .0
             .lock()
-            .map_err(|_| "browser delegation unavailable")? = Some(Grant {
+            .map_err(|_| "browser delegation unavailable")?;
+        if slot.as_ref().is_some_and(|grant| grant.owner != owner) {
+            return Err(
+                "browser belongs to another chat; explicit revocation is required before transfer"
+                    .into(),
+            );
+        }
+        *slot = Some(Grant {
             owner,
             origin: url.origin().ascii_serialization(),
             actions,
             expires: Instant::now() + Duration::from_secs(600),
         });
         Ok(())
+    }
+
+    pub(super) fn bound(&self, owner: &str) -> bool {
+        self.0
+            .lock()
+            .is_ok_and(|slot| slot.as_ref().is_some_and(|g| g.owner == owner))
+    }
+
+    /// Only called after the private Host bridge resolves this exact owner/tab.
+    /// An expired execution lease gets fresh frames; a revoked binding is never
+    /// recreated. Origin changes still revoke ownership.
+    pub(super) fn renew_host(&self, owner: &str, url: &Url) -> Result<bool, String> {
+        let mut slot = self
+            .0
+            .lock()
+            .map_err(|_| "browser delegation unavailable")?;
+        let grant = slot
+            .as_mut()
+            .filter(|g| g.owner == owner && g.origin == url.origin().ascii_serialization())
+            .ok_or("browser is not bound to this chat and origin")?;
+        let expired = Instant::now() >= grant.expires;
+        grant.expires = Instant::now() + Duration::from_secs(600);
+        Ok(expired)
     }
 
     // Visible UI renews the same binding without invalidating in-flight frames.
@@ -142,7 +172,8 @@ pub async fn desktop_browser_access(
 }
 
 /// Trusted presentation UI binds the visible tab to its actual current chat.
-/// Nothing is persisted; hide/close/UI reload or stale binding revokes it.
+/// Nothing is persisted; explicit revoke/close/origin changes revoke it.
+/// Hiding or selecting another chat changes presentation only.
 /// Renewal preserves frames. This does not approve or execute any model action.
 #[tauri::command]
 pub async fn desktop_browser_delegate(
@@ -164,20 +195,43 @@ pub async fn desktop_browser_delegate(
             return Err("browser origin changed; synchronize the visible page again".into());
         }
         if !inspector.delegation.renew(&owner, &url, allow_actions)? {
-            inspector.revoke();
             inspector.delegation.grant(owner, &url, allow_actions)?;
+            inspector.invalidate();
         }
     } else {
         inspector.revoke();
     }
     let current = target.url().map_err(|_| "browser URL unavailable")?;
     inspector.delegation.navigate(&current);
+    if !requested_owner.is_empty() {
+        state.bind_owner(&requested_owner, &tab_id)?;
+    }
     inspector.delegation.status(&requested_owner, &current)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_renewal_cannot_transfer_or_resurrect_revoked_scope() {
+        let grants = Delegation::default();
+        let url = Url::parse("https://example.com/page").unwrap();
+        grants.grant("A".into(), &url, true).unwrap();
+        assert!(grants.grant("B".into(), &url, true).is_err());
+        grants.0.lock().unwrap().as_mut().unwrap().expires = Instant::now();
+        assert!(grants.bound("A"));
+        assert!(grants.renew_host("B", &url).is_err());
+        assert!(grants
+            .renew_host("A", &Url::parse("https://other.example.com").unwrap())
+            .is_err());
+        assert!(grants.renew_host("A", &url).unwrap());
+        assert!(!grants.renew_host("A", &url).unwrap());
+        assert!(grants.permits("A", &url, true));
+        grants.revoke();
+        assert!(!grants.bound("A"));
+        assert!(grants.renew_host("A", &url).is_err());
+    }
+
     #[test]
     fn renewal_only_preserves_a_live_identical_scope() {
         let bindings = Delegation::default();

@@ -56,7 +56,7 @@ async fn dispatch<T: Send + 'static>(
         }
         let state = app.state::<BrowserState>();
         let valid = state
-            .native_dispatch_target(target.label(), &inspector)
+            .native_dispatch_target(target.label(), &inspector, true)
             .is_ok()
             && inspector.navigation_epoch.load(Ordering::SeqCst) == epoch;
         if !valid || browser_inspect::authorize(&target, &inspector, Some(&owner), action).is_err()
@@ -71,6 +71,32 @@ async fn dispatch<T: Send + 'static>(
         .await
         .map_err(|_| "native callback timed out")?
         .map_err(|_| "native callback closed")?
+}
+
+/// Presentation never owns page authorization. GTK parks mapped background
+/// pages in an offscreen render host, without a screen/input-shield window.
+pub async fn present(view: &Webview, visible: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = oneshot::channel();
+        view.with_webview(move |handle| {
+            if !tx.is_closed() {
+                linux::present(handle, visible, tx);
+            }
+        })
+        .map_err(|_| "native presentation dispatch failed")?;
+        tokio::time::timeout(TIMEOUT, rx)
+            .await
+            .map_err(|_| "native presentation timed out")?
+            .map_err(|_| "native presentation callback closed")?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !visible {
+            view.hide().map_err(|_| "native browser hide failed")?;
+        }
+        Ok(())
+    }
 }
 
 pub async fn layout(view: &Webview, rect: (f64, f64, f64, f64)) -> Result<(), String> {
@@ -156,6 +182,7 @@ async fn image_size(view: &Webview) -> Result<(u32, u32), String> {
 pub async fn screenshot(state: &BrowserState, tab: &str, owner: &str) -> Result<Value, String> {
     state.loaded_receipt(owner, tab)?;
     let (view, inspector) = state.inspection_target(tab)?;
+    state.native_dispatch_target(view.label(), &inspector, true)?;
     let _gate = tokio::time::timeout(TIMEOUT, inspector.gate.lock())
         .await
         .map_err(|_| "native browser busy")?;
@@ -228,6 +255,7 @@ pub async fn input(
     request.validate()?;
     state.loaded_receipt(owner, tab)?;
     let (view, inspector) = state.inspection_target(tab)?;
+    state.native_dispatch_target(view.label(), &inspector, true)?;
     let _gate = tokio::time::timeout(TIMEOUT, inspector.gate.lock())
         .await
         .map_err(|_| "native browser busy; no input scheduled")?;

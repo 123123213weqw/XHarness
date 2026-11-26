@@ -1,10 +1,9 @@
 // Settled-node identity prevents stream-delta updates from rerendering this row.
-// Mounted on 'conversation.composer.dock' so it sticks with the composer in the
+// Mounted on 'conversation.composer.status' so it rides with the composer in the
 // active conversation scrollport (see ConversationRoot data-conversation-scroll).
 
 import { throughput } from '../../shared/reception-metrics'
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { IconChecklistOutline14 } from '../primitives'
+import { memo, useId, useMemo } from 'react'
 import type { ConversationSnapshot, UseProjection } from "../types/runtime"
 import type { SnapshotSelectorHook } from "../types/slots"
 import type { ContextComposition, ContextPressureProjection, TokenUsageProjection } from "../types/wire"
@@ -150,6 +149,16 @@ export function contextOccupancy(
   return { percent: Math.min(100, Math.round(usedTokens / contextWindow * 100)), usedTokens, contextWindow, exact: true, label, accuracy: 'provider_reported', stale, composition: sample?.composition }
 }
 
+/** One readout on the strip: a muted label, a brighter value, an optional muted unit. */
+interface StatMetric {
+  key: string
+  label: string
+  /** Native tooltip: the precise meaning a short label cannot carry. */
+  hint: string
+  value: string
+  unit?: string | undefined
+}
+
 /** Props: the conversation-snapshot selector plus the projection read seat. */
 export interface StatsLineProps {
   useSession: SnapshotSelectorHook<ConversationSnapshot>
@@ -159,28 +168,7 @@ export interface StatsLineProps {
 }
 
 export const StatsLine = memo(function StatsLine({ useSession, useProjection, t }: StatsLineProps) {
-  const disclosureRef = useRef<HTMLDivElement | null>(null)
-  const [open, setOpen] = useState(false)
   const panelId = useId()
-  useEffect(() => {
-    if (!open) return
-    const closeOutside = (event: PointerEvent): void => {
-      const disclosure = disclosureRef.current
-      if (disclosure !== null && event.target instanceof Node && !disclosure.contains(event.target)) setOpen(false)
-    }
-    const closeEscape = (event: globalThis.KeyboardEvent): void => {
-      const disclosure = disclosureRef.current
-      if (event.key !== 'Escape' || disclosure === null) return
-      setOpen(false)
-      disclosure.querySelector('button')?.focus()
-    }
-    document.addEventListener('pointerdown', closeOutside)
-    document.addEventListener('keydown', closeEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside)
-      document.removeEventListener('keydown', closeEscape)
-    }
-  }, [open])
   const settledNodes = useSession(s => s.chat.legacy.nodes)
   const usage = useProjection('tokenUsage')
   // Every figure rides the durable sessionStats projection, so paging and
@@ -189,23 +177,26 @@ export const StatsLine = memo(function StatsLine({ useSession, useProjection, t 
   // while no projection value is served.
   const projected = useProjection('sessionStats')
   const stats = useMemo(() => projected ?? deriveStats(settledNodes), [projected, settledNodes])
-  // Groups with no data drop out whole; all reported metrics remain available.
-  const groups: string[] = []
+  // Metrics with no data drop out whole; all reported metrics remain available.
+  // The readout leads with what the user watches while the model streams,
+  // then reports what the session has accumulated.
+  const live: StatMetric[] = []
+  const session: StatMetric[] = []
   const rateTotals = projected?.activeThroughput ?? stats
   const rate = throughput(rateTotals.decodeTokens, rateTotals.decodeMs)
-  const rateLabel = rate === null ? null : t('stats.tokensPerSecond', { throughput: formatTokensPerSecond(rate) })
   if (stats.steps > 0) {
-    groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }))
-    const durations: string[] = []
-    if (stats.llmMs > 0) durations.push(t('stats.llm', { duration: formatDuration(stats.llmMs) }))
-    if (stats.toolMs > 0) durations.push(t('stats.toolCall', { duration: formatDuration(stats.toolMs) }))
-    if (durations.length > 0) groups.push(durations.join(' · '))
-    const speeds: string[] = []
     if (stats.ttftSteps > 0) {
-      speeds.push(t('stats.ttftAverage', { duration: formatDuration(stats.ttftMs / stats.ttftSteps) }))
+      live.push({ key: 'ttft', label: t('stats.ttft'), hint: t('stats.ttftHint'), value: formatDuration(stats.ttftMs / stats.ttftSteps) })
     }
-    if (rateLabel !== null) speeds.push(rateLabel)
-    if (speeds.length > 0) groups.push(speeds.join(' · '))
+    if (rate !== null) {
+      live.push({ key: 'speed', label: t('stats.speed'), hint: t('stats.speedHint'), value: formatTokensPerSecond(rate), unit: t('stats.tokensPerSecond') })
+    }
+    if (stats.llmMs > 0) session.push({ key: 'llm', label: t('stats.llm'), hint: t('stats.llmHint'), value: formatDuration(stats.llmMs) })
+    if (stats.toolMs > 0) session.push({ key: 'tools', label: t('stats.toolCall'), hint: t('stats.toolCallHint'), value: formatDuration(stats.toolMs) })
+    session.push(
+      { key: 'turns', label: t('stats.turns'), hint: t('stats.turnsHint'), value: String(stats.turns) },
+      { key: 'steps', label: t('stats.steps'), hint: t('stats.stepsHint'), value: String(stats.steps) },
+    )
   }
   // Context occupancy deliberately lives on the composer's ContextMeter ring,
   // not here — one home per fact.
@@ -216,24 +207,33 @@ export const StatsLine = memo(function StatsLine({ useSession, useProjection, t 
   if (usage !== undefined
     && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
     const cacheHit = cacheHitPercent(usage)
-    if (cacheHit !== null) groups.push(t('stats.cacheHit', { percent: cacheHit }))
-    groups.push(t('stats.tokens', {
-      input: formatTokens(billedInputTokens(usage)),
-      output: formatTokens(usage.outputTokens),
-    }))
+    if (cacheHit !== null) live.push({ key: 'cache', label: t('stats.cacheHit'), hint: t('stats.cacheHitHint'), value: `${cacheHit}%` })
+    live.push(
+      { key: 'input', label: t('stats.inputTokens'), hint: t('stats.inputTokensHint'), value: formatTokens(billedInputTokens(usage)) },
+      { key: 'output', label: t('stats.outputTokens'), hint: t('stats.outputTokensHint'), value: formatTokens(usage.outputTokens) },
+    )
   }
-  if (groups.length === 0) return null
-  // Explicit disclosure keeps off-card content accessible in WebKit as well
-  // as Chromium. It owns only open state, never token accounting.
+  const rows = [live, session].filter(row => row.length > 0)
+  if (rows.length === 0) return null
+  // Persistent readout under the composer: a muted label, a brighter value.
+  // These figures exist to be watched continuously, so they render inline,
+  // always on. No disclosure interaction, no popup geometry. Live-region
+  // chatter stays off because the values tick many times a second.
   return (
-    <div ref={disclosureRef} className={css.root} data-composer-stats data-expanded={open || undefined}>
-      <button type="button" className={css.summary} aria-label={t('stats.title')} title={t('stats.title')}
-        aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => {setOpen(!open)}}>
-        <IconChecklistOutline14 />
-      </button>
-      {open && <div id={panelId} className={css.details} role="region" aria-label={t('stats.title')}>
-        {groups.map(group => <div key={group}>{group}</div>)}
-      </div>}
+    <div className={css.root} data-composer-stats>
+      <div id={panelId} className={css.strip} role="status" aria-live="off" aria-label={t('stats.title')}>
+        {rows.map((row, index) => (
+          <div key={index} className={css.row}>
+            {row.map(metric => (
+              <span key={metric.key} className={css.metric} title={metric.hint}>
+                {metric.label}
+                <span className={css.value}>{metric.value}</span>
+                {metric.unit}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   )
 })

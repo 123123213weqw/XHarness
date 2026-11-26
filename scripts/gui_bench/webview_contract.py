@@ -9,11 +9,42 @@ import time
 
 
 class Contract:
+    # Native refusals that a later observation resolves. Each is a pure read
+    # that returned nothing: the pane is still settling, a navigation policy
+    # event or layout re-apply landed inside the read ("browser binding
+    # changed"), or the page has no committed document yet. Matched whole:
+    # a lookalike message is an unreviewed fault, not a readiness state. The
+    # observe() deadline bounds the repeats, so a persistent one still fails.
+    TRANSIENT = ('native browser is hidden', 'native browser is not delegated to this session',
+                 'only the active, laid-out browser tab can be inspected',
+                 'browser navigation changed during inspection; observe again',
+                 'browser layout is changing; observe again',
+                 'browser viewport has not settled; synchronize the pane and observe again',
+                 'browser binding changed', 'browser page is not ready',
+                 'browser page layout is not ready', 'native observation is busy',
+                 'native evaluation timed out', 'native callback unavailable')
+    # Action receipts additionally proving the native owner scheduled nothing:
+    # a superseded frame (newer observation, navigation policy event, layout
+    # re-apply), a page frozen past the action deadline, or a busy per-tab
+    # gate. Applied and unknown effects are never here, never re-driven.
+    UNSTARTED = ('stale_frame', 'stale_target', 'stale_ref',
+                 'action expired before execution', 'native browser is busy')
+
+    @classmethod
+    def transient(cls, message):
+        return str(message) in cls.TRANSIENT
+
     def __init__(self, call):
         self.call, self.actions, self.denials = call, [], []
         self.readiness_denials = []
         self.observed_postconditions = []
+        self.superseded_frames = []
         self._target_page_offset = 0
+
+    def superseded(self, receipt):
+        message = str(receipt.get('message') or '')
+        return (receipt.get('ok') is False and receipt.get('effect') == 'not_started'
+                and (self.transient(message) or message.startswith(self.UNSTARTED)))
 
     def observe(self, scope='page', **paging):
         # AppFrame expands/resizes a real native pane asynchronously. Retry
@@ -21,17 +52,12 @@ class Contract:
         # is settling or a navigation invalidated the read. Never replay an
         # action, relax native scope checks or conceal transport/JS failures.
         deadline = time.monotonic() + 5
-        transient = {'native browser is hidden', 'native browser is not delegated to this session',
-                     'only the active, laid-out browser tab can be inspected',
-                     'browser navigation changed during inspection; observe again',
-                     'browser layout is changing; observe again',
-                     'browser viewport has not settled; synchronize the pane and observe again'}
         while True:
             try:
                 snapshot = self.call('observe', dict(scope=scope, **paging))
                 break
             except RuntimeError as error:
-                if str(error) not in transient or time.monotonic() >= deadline:
+                if not self.transient(error) or time.monotonic() >= deadline:
                     raise
                 self.readiness_denials.append(str(error))
                 time.sleep(.1)
@@ -166,10 +192,17 @@ class Contract:
         evidence['verification'] = 'matched_observed_state_not_applied_receipt'
 
     def act(self, action, label, scope='page', *, verify_unknown_select=False, **fields):
-        snapshot, node = self.target(label, scope)
-        if node['disabled']: raise AssertionError('contract target is disabled: ' + label)
-        request = dict(action=action, frame_id=snapshot['frame_id'], ref=node['ref'], **fields)
-        receipt = self.call('perform', request)
+        # An action is re-driven only from a new observation after a receipt that
+        # proves nothing was scheduled. Same bound as target()/observe().
+        deadline = time.monotonic() + 5
+        while True:
+            snapshot, node = self.target(label, scope)
+            if node['disabled']: raise AssertionError('contract target is disabled: ' + label)
+            request = dict(action=action, frame_id=snapshot['frame_id'], ref=node['ref'], **fields)
+            receipt = self.call('perform', request)
+            if not self.superseded(receipt) or time.monotonic() >= deadline: break
+            self.superseded_frames.append(dict(action=action, label=label, message=receipt.get('message')))
+            time.sleep(.05)
         if receipt.get('ok') is not True or receipt.get('effect') != 'applied':
             if (verify_unknown_select is True and action == 'select'
                     and receipt.get('ok') is False and receipt.get('effect') == 'unknown'):
@@ -226,4 +259,5 @@ class Contract:
         else: raise ValueError('unknown contract task')
         return dict(actions=self.actions, denials=self.denials,
                     readiness_denials=self.readiness_denials,
+                    superseded_frames=self.superseded_frames,
                     observed_postconditions=self.observed_postconditions, model_task_passed=None)

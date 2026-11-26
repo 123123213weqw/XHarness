@@ -31,6 +31,7 @@ export type BrowserCommand = { tabId?: string } & (
 export interface EngineOptions {
   artifactRoot: string;
   headless?: boolean;
+  containerSandbox?: true;
   proxy?: string;
   allowedOrigins: string[];
   viewport?: { width: number; height: number };
