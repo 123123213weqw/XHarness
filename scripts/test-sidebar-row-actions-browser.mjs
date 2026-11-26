@@ -25,11 +25,11 @@ try {
   }
   await page.route('**/*',routeUi)
   await page.goto('http://127.0.0.1:39187/?fixture=1')
-  await page.getByRole('button',{name:'Account & settings',exact:true}).waitFor()
+  await page.getByRole('button',{name:'Settings',exact:true}).waitFor()
   const touch=await browser.newPage({viewport:{width:320,height:780},locale:'en-US',hasTouch:true})
   touch.on('pageerror',error=>errors.push(error.message));await touch.route('**/*',routeUi)
   await touch.goto('http://127.0.0.1:39187/?fixture=1')
-  await touch.getByRole('button',{name:'Account & settings',exact:true}).waitFor()
+  await touch.getByRole('button',{name:'Settings',exact:true}).waitFor()
   assert.equal(await touch.evaluate(()=>matchMedia('(pointer:coarse)').matches),true)
   for(const width of [320,375,426,600]) {
     await touch.setViewportSize({width,height:780})

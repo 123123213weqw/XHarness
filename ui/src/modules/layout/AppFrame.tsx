@@ -28,7 +28,7 @@ import type { ShellNavigation } from './shell-navigation'
 const xhWorkspaceWindow=xhCreateBrowserWindowController(typeof window==='undefined'?undefined:window.__TAURI__)
 
 /** Full composed props: runtime share + child-slot render share + store share. */
-export interface AppFrameProps extends PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay' | 'workspace.item' | 'work.center.tasks' | 'work.center.automations' | 'work.center.executions' | 'assistant.center' | 'swarm.center'> {
+export interface AppFrameProps extends PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay' | 'workspace.item' | 'work.center.tasks' | 'work.center.automations' | 'work.center.executions' | 'swarm.center'> {
   useSessions<T>(select: (state: import('../views-types').SessionSnapshot) => T): T
   useStore<T>(select: (state: import('./stores').LayoutState) => T): T
   actions: import('./service').PanelActions
@@ -112,7 +112,6 @@ export function AppFrame({
     return current !== undefined && s.byId[current]?.blank === false ? current : undefined
   })
   const frameRef = useRef<HTMLDivElement | null>(null)
-  const [assistantVisible,setAssistantVisible]=useState(false)
   const [swarmVisible,setSwarmVisible]=useState(false)
   const { route: { page: centerPage } } = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot)
   const closeCenterPage = navigation.close
@@ -342,7 +341,7 @@ export function AppFrame({
         const target = event.target
         // Shell controls and peer page entries own their transitions. Do not
         // insert an intermediate chat route (or close the replayed destination).
-        if (target instanceof Element && target.closest('[data-shell-navigation],[data-sidebar-toggle],[data-xharness-assistant-nav],[data-xharness-plugin-nav],[data-xharness-work-nav]')) return
+        if (target instanceof Element && target.closest('[data-shell-navigation],[data-sidebar-toggle],[data-xharness-plugin-nav],[data-xharness-work-nav]')) return
         if (centerPage !== 'chat') closeCenterPage()
       }} onClick={event => {
         // Row actions stop propagation; dismiss only a completed navigation
@@ -367,7 +366,7 @@ export function AppFrame({
             the shell's own pending rendering. The conversation
             is session-maybe; the strict details entry naturally renders
             empty while no session is current. */}
-        <CenterColumn swarm={centerPage==='swarm'}><div className="xhfeature-shell" data-swarm-active={centerPage==='swarm'||undefined}><div className="xhswarm-seat" hidden={centerPage!=='swarm'}>{centerPage==='swarm'&&renderSlot('swarm.center',{showConversation:setSwarmVisible})}</div><div className="xhassistant-seat" hidden={centerPage !== 'assistant'}>{centerPage === 'assistant' && renderSlot('assistant.center', {showConversation:setAssistantVisible})}</div><div className="xhwork-conversation" hidden={centerPage !== 'chat' && !(centerPage==='assistant'&&assistantVisible) && !(centerPage==='swarm'&&swarmVisible)} aria-label={centerPage==='assistant'?'Little X chat':undefined}>{renderSlot('conversation', {})}</div>
+        <CenterColumn swarm={centerPage==='swarm'}><div className="xhfeature-shell" data-swarm-active={centerPage==='swarm'||undefined}><div className="xhswarm-seat" hidden={centerPage!=='swarm'}>{centerPage==='swarm'&&renderSlot('swarm.center',{showConversation:setSwarmVisible})}</div><div className="xhwork-conversation" hidden={centerPage !== 'chat' && !(centerPage==='swarm'&&swarmVisible)}>{renderSlot('conversation', {})}</div>
         {centerPage === 'plugins' && <main style={{flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px clamp(20px, 5vw, 56px)'}}>
           <button type="button" style={{cursor: 'pointer', background: 'none', border: 0, color: 'var(--dsw-alias-label-secondary)', padding: '0 0 24px', font: 'inherit'}}
             aria-label="Back to chat" onClick={closeCenterPage}>← {navigator.language.startsWith('zh') ? '返回对话' : 'Back to chat'}</button>

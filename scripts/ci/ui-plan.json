@@ -3560,7 +3560,7 @@
       "argv": [
         "node",
         "--test",
-        "scripts/test-account-entry-source.mjs"
+        "scripts/test-retired-account-ui.mjs"
       ],
       "env": {},
       "weight": 7
@@ -3593,9 +3593,8 @@
       "id": "contract-090",
       "suite": "contract",
       "argv": [
-        "node",
-        "--test",
-        "scripts/test-managed-connection-source.mjs"
+        "python3",
+        "scripts/test-retired-product-ipc.py"
       ],
       "env": {},
       "weight": 10

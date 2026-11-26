@@ -595,18 +595,6 @@
       ]
     },
     {
-      "id": "@xlang/xharness-client-ui-assistant",
-      "kind": "source-module",
-      "source": "src/modules/assistant/index.tsx",
-      "inject": [
-        "@xharness/dsh-client-runtime",
-        "@xharness/dsh-client-ui-primitives",
-        "@xharness/dsh-client-ui-layout",
-        "@xharness/dsh-client-ui-sidebar",
-        "@xharness/dsh-client-ui-conversation"
-      ]
-    },
-    {
       "id": "@xlang/xharness-client-ui-session-import",
       "kind": "source-module",
       "source": "src/modules/session-import/index.ts",

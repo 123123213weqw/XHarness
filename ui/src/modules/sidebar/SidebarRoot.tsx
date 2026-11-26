@@ -193,7 +193,6 @@ export function SidebarRoot({
       {titlebarHost === null && navigation && !wide && <div className="xh-shell-navigation-rail"><NavigationButtons navigation={navigation} t={t} /></div>}
 
       <div className="xhsidebar-primary-actions" data-wide={wide}>
-      {/* Vertically stacked peer actions; equal width and height, no nested hierarchy. */}
       <Tooltip label={t('session.new.label')} delayMs={500} disabled={wide}>
         <button
           type="button"
@@ -206,7 +205,6 @@ export function SidebarRoot({
         </button>
       </Tooltip>
 
-      {renderSlot('sidebar.primary.action', {wide})}
       </div>
 
       {/* The browsing region fills the column between the controls and the

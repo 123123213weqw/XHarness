@@ -207,18 +207,6 @@ for (const name of modules) {
         namespaces[0].dictionaries[lang][key] = value
       }
     }
-    if (name === 'settings-general') {
-      // Reviewed account-menu addition minus its redundant visual caption.
-      // Accessible trigger/menu copy and all other dictionary entries remain frozen.
-      Object.assign(namespaces[0].dictionaries.zh, {
-        'account.trigger':'账号与设置','account.name':'XHarness',
-        'account.local':'本机工作区','account.menu':'账号与额度','account.profile':'使用档案',
-      })
-      Object.assign(namespaces[0].dictionaries.en, {
-        'account.trigger':'Account & settings','account.name':'XHarness',
-        'account.local':'Local workspace','account.menu':'Account & allowance','account.profile':'Usage profile',
-      })
-    }
     assert.deepEqual(normalized(two.namespaces), namespaces)
     const expected = normalized(one.registrations.map(({spec}) => spec))
     if (name === 'goal') expected.push({name:'conversation.input.dock', id:'task-progress', order:9, locale:'goal'})
@@ -227,15 +215,7 @@ for (const name of modules) {
       'work.center.tasks': {kind: 'single', scope: 'root'},
       'work.center.automations': {kind: 'single', scope: 'root'},
       'work.center.executions': {kind: 'single', scope: 'root'},
-      'assistant.center': {kind: 'single', scope: 'root'},
     })
-    if (name === 'sidebar') Object.assign(expected[0].children, {
-      'sidebar.primary.action': {kind: 'list', scope: 'root'},
-    })
-    if (name === 'settings-general') {
-      expected[0].children['settings.account-entry'] = {kind:'single',scope:'root'}
-      expected.splice(2, 0, {name:'settings.account-entry',locale:'settings'})
-    }
     assert.deepEqual(normalized(two.registrations.map(({spec}) => spec)), expected)
   })
 }
@@ -345,7 +325,7 @@ for (const [label, loader] of [['legacy', legacy], ['source', current]]) {
     const actions = env.registrations[0].spec.inject()
     actions.startSession('workspace'); actions.toggleSidebar()
     assert.deepEqual(normalized(env.trace), [{workspace: 'workspace'}, 'toggleSidebar'])
-    assert.deepEqual(Object.keys(env.registrations[0].spec.children), ['sidebar.brand.mark', 'sidebar.brand.name', 'sidebar.workspaces', 'sidebar.settings', 'sidebar.footer.action', ...(label==='source'?['sidebar.primary.action']:[])])
+    assert.deepEqual(Object.keys(env.registrations[0].spec.children), ['sidebar.brand.mark', 'sidebar.brand.name', 'sidebar.workspaces', 'sidebar.settings', 'sidebar.footer.action'])
   })
   test(`${label}: goal dock preserves user-control verbs, reads fresh CAS and projects command bubble`, async () => {
     const env = context(); loader.entry('goal').apply(env.ctx)

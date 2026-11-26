@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use xharness_core::ModelProvider;
 use xharness_debug::DebugRecorder;
 use xharness_host::{
-    ModelDescriptor, ModelReasoning, ModelReasoningEffort, ModelRegistry, ModelRoute,
-    RegisteredModel,
+    retired_account_provider, ModelDescriptor, ModelReasoning, ModelReasoningEffort, ModelRegistry,
+    ModelRoute, RegisteredModel,
 };
 use xharness_provider_openai::{
     OpenAiCapabilityProbe, OpenAiProtocol, OpenAiProvider, OpenAiProviderConfig,
@@ -87,7 +87,7 @@ impl ModelDeployment {
         attachments: Option<Arc<dyn xharness_attachments::AttachmentStore>>,
     ) -> Result<Self, String> {
         let default_route = ModelRoute::new(&config.provider, &config.model);
-        if config.model == "unconfigured" {
+        if config.model == "unconfigured" || retired_account_provider(&config.provider, None) {
             return Ok(Self {
                 default_route,
                 default_provider_display_name: config.provider,
@@ -297,6 +297,9 @@ impl ProviderConfig {
         registry: &mut ModelRegistry,
         debug: DebugRecorder,
     ) -> Result<(), String> {
+        if retired_account_provider(&self.id, self.api_key_env.as_deref()) {
+            return Ok(());
+        }
         if self.kind != "openai-compatible" {
             return Err(format!(
                 "provider {:?} uses unsupported kind {:?}; only openai-compatible is available",

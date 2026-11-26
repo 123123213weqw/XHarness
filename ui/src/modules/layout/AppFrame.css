@@ -9,7 +9,7 @@
 .xhfeature-shell>.xhwork-conversation{flex:1;min-width:0;min-height:0;width:100%}
 .xhfeature-shell>.xhwork-conversation[hidden]{display:none}
 
-.xhfeature-shell{flex-direction:column}.xhassistant-seat[hidden]{display:none}.xhassistant-seat{flex:none;min-width:0}
+.xhfeature-shell{flex-direction:column}
 /* Each column owns an inset surface. Keep the tracks and their resize handles
    unchanged; the gutters and rounded clipping live inside those tracks. */
 ._84hhiq_frame{--xh-region-inset:8px;background:var(--dsw-specific-sidebar-fill)}
