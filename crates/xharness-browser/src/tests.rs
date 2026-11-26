@@ -68,3 +68,47 @@ fn discovered_candidates_are_files_and_canonical_aliases_are_unique() {
         assert!(seen.insert(file.canonicalize().unwrap()));
     }
 }
+
+#[test]
+fn browser_discovery_pins_numeric_loopback_and_rejects_foreign_paths() {
+    use super::process::parse_port_file;
+    assert_eq!(
+        parse_port_file("1234\n/devtools/browser/abc-123\n"),
+        Some((1234, "abc-123"))
+    );
+    for invalid in [
+        "1234\nws://example.com/devtools/browser/id",
+        "1234\n/devtools/browser/../page/id",
+        "1234\n/devtools/browser/",
+        "0\n/devtools/browser/id",
+        "65536\n/devtools/browser/id",
+    ] {
+        assert!(parse_port_file(invalid).is_none(), "{invalid}");
+    }
+}
+
+#[tokio::test]
+async fn standalone_has_no_trusted_desktop_surface() {
+    use super::Browsers;
+    use serde_json::json;
+    let standalone = Browsers::standalone();
+    let owner = "fixture";
+    assert_eq!(
+        standalone.status(owner).await["capabilities"]["human_takeover"],
+        false
+    );
+    assert_eq!(
+        Browsers::default().status(owner).await["capabilities"]["human_takeover"],
+        true
+    );
+    assert!(standalone
+        .open_from_shell(owner, "https://example.invalid".into())
+        .await
+        .is_err());
+    assert!(standalone.preview(owner, "stale-tab").await.is_err());
+    assert!(standalone
+        .manual(owner, "stale-tab", json!({"action":"status"}))
+        .await
+        .is_err());
+    assert!(standalone.sessions.lock().await.is_empty());
+}

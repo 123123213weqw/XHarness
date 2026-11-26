@@ -20,13 +20,8 @@ struct PendingOpen {
     owner: String,
     cancelled: Arc<AtomicBool>,
 }
-#[derive(Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ControlRequest {
-    Status {},
-    Open { url: String },
-    Close {},
-}
+pub use xharness_browser::ControlRequest;
+
 #[derive(Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlReply {

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "kind": "compatible-addition",
+  "reason": "Share the owned Chromium controller between standalone Host and Tauri; enroll real browser model-wire acceptance.",
+  "compatibility": "Preserve desktop bridge, human takeover, chat retirement, WebView permissions, installer identity and updater; standalone is explicit and authenticated with existing APIs.",
+  "paths": {
+    ".github/workflows/ci.yml": {
+      "before": "9e1b8cfceb5a5c49f0a770667be0ec47cc44b7ac3fef5f7d2adcf72661e3b4f4",
+      "after": "c122a4e2be29a896401408deb93e9102d9b3f0015412ac62832df9fc1791af99"
+    },
+    "Cargo.toml": {
+      "before": "c11f1912d73af9184f909d37258a532f8912024f1bd64a3d201bd785d3e816cf",
+      "after": "d2c34ccc42903353e109bdd530706294049e2bf0b706568a41d9036022547d75"
+    },
+    "apps/desktop/src-tauri/Cargo.toml": {
+      "before": "8d3700e8356291560a6f1b2469b0995b9e97064381a11f95ccd0ccd044e96795",
+      "after": "eb75c9f698d86967f07d4e968147c3426f0a0b749af2b40ee2b98f97bf12120f"
+    },
+    "config/architecture-dependencies.json": {
+      "before": "a15d2d7772ab392ea391eb8224e08302a045c92a93a4eea83a2c827012b8b2b7",
+      "after": "08bdc9e5a0cc32ab777a232c6840d33cab2b9c023804ef67fb6fe241695b6da9"
+    }
+  },
+  "regressions": [
+    "architecture",
+    "native",
+    "updater",
+    "windows"
+  ]
+}

@@ -664,6 +664,11 @@ impl SessionToolFactory for NativeToolFactory {
 
     async fn shutdown(&self) -> Result<(), String> {
         let mut errors = Vec::new();
+        if let Some(browser) = self.native_browser.get() {
+            if let Err(error) = browser.shutdown_local().await {
+                errors.push(error);
+            }
+        }
         if let Some(controller) = self.job_continuations.get() {
             if let Err(error) = controller.shutdown().await {
                 errors.push(error);

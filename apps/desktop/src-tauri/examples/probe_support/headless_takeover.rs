@@ -254,7 +254,7 @@ pub async fn run() {
         .manual("b", other, json!({"action":"status"}))
         .await
         .is_err());
-    b.shutdown().await;
+    b.shutdown().await.expect("owned browser shutdown");
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
     println!("TAKEOVER_ENGINE_EVIDENCE: exact-target JPEG, queued action fenced, real trusted Unicode input, unknown write surfaced, stale replay denied, fresh observation required for writes, B unchanged, Agent resumed same page, lifecycle cleanup while human");

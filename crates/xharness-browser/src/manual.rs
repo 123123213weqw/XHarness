@@ -8,6 +8,9 @@ impl Browsers {
     /// Trusted shell only. The same owner, exact page, driver generation and
     /// current preview are all required; nothing here is a model RPC.
     pub async fn manual(&self, owner: &str, tab: &str, arguments: Value) -> Result<Value, String> {
+        if !self.desktop {
+            return Err("human takeover is not available on this Host".into());
+        }
         let action: Manual =
             serde_json::from_value(arguments).map_err(|_| "invalid browser takeover arguments")?;
         let slot = self.slot(owner, false).await?;
@@ -88,7 +91,7 @@ impl Browsers {
                         return Ok(rejected("preview geometry changed; wait for a fresh image"));
                     }
                 }
-                use crate::browser_native::InputRequest;
+                use crate::InputRequest;
                 match other {
                     Manual::Click { frame_id, x, y, .. } => {
                         let request = InputRequest::Click { frame_id, x, y };
@@ -133,7 +136,7 @@ impl Browsers {
                         Ok(json!({"ok":true,"effect":"applied"}))
                     }
                     Manual::Navigate { url, .. } => {
-                        let url = crate::browser::web_url(&url)?.to_string();
+                        let url = crate::web_url(&url)?.to_string();
                         slot.manual_frame
                             .lock()
                             .map_err(|_| "preview frame unavailable")?
