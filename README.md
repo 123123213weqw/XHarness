@@ -75,6 +75,8 @@ Download an installer from [Releases](https://github.com/123123213weqw/x-harness
 
 Every release ships `SHA256SUMS`, per-platform receipts, and the updater public key; the desktop app updates through the built-in updater channel described in [Desktop packaging and updates](docs/specs/desktop.md). A successful CI artifact is not necessarily a signed, notarized public release.
 
+No XHarness account is required. Open **Settings → Models** to configure your model endpoint and, if it requires one, your API key.
+
 The desktop browser, local tools, and permission controls are native capabilities. They are not simulated by embedding third-party sites in the ordinary Web UI.
 
 ### Run the local Web Host

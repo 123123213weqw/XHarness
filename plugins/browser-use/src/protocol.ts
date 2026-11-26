@@ -146,12 +146,18 @@ function compactLegacy(payload: RecordValue): RecordValue {
 function effect(receipt: BrowserReceipt): string {
   return receipt.outcome === "possibly-applied" ? "unknown" : receipt.outcome === "not-started" ? "not_started" : "applied";
 }
-export async function serve(): Promise<void> {
+export async function serve(options: { containerSandbox?: true } = {}): Promise<void> {
   const origins: unknown = JSON.parse(process.env.XHARNESS_BROWSER_ALLOWED_ORIGINS ?? "[]");
   const allowedOrigins = strings(origins, 1000);
   const temporary = process.env.XHARNESS_BROWSER_ARTIFACT_ROOT === undefined;
   const artifactRoot = temporary ? await mkdtemp(resolve(tmpdir(), "xharness-browser-")) : resolve(process.env.XHARNESS_BROWSER_ARTIFACT_ROOT ?? "");
-  const engine = await BrowserUseEngine.create({ allowedOrigins, artifactRoot, maxOutputChars: 5000, ...(process.env.XHARNESS_BROWSER_PROXY ? { proxy: process.env.XHARNESS_BROWSER_PROXY } : {}) });
+  let engine: BrowserUseEngine;
+  try {
+    engine = await BrowserUseEngine.create({ allowedOrigins, artifactRoot, maxOutputChars: 5000, ...options, ...(process.env.XHARNESS_BROWSER_PROXY ? { proxy: process.env.XHARNESS_BROWSER_PROXY } : {}) });
+  } catch (failure) {
+    if (temporary) await rm(artifactRoot, { recursive: true, force: true });
+    throw failure;
+  }
   async function call(args: unknown): Promise<RecordValue> {
     const parsed = parseCommand(args);
     const receipt = await engine.execute(parsed.command);
@@ -180,9 +186,24 @@ export async function serve(): Promise<void> {
     const failed = receipt.error !== undefined || (typeof payload === "object" && payload !== null && "error" in payload);
     return { content, ...(failed ? { isError: true } : {}) };
   }
+  return serveBrowserMcp(call, async () => {
+    try { await engine.close(); }
+    finally { if (temporary) await rm(artifactRoot, { recursive: true, force: true }); }
+  }, options.containerSandbox === true);
+}
+
+// Metadata is identical on the primary and container transports. The caller
+// may defer allocating a backend until a validated tool invocation.
+export async function serveBrowserMcp(
+  call: (args: unknown) => Promise<RecordValue>,
+  close: () => Promise<void>,
+  stopOnDisconnect = false,
+): Promise<void> {
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   let queue = Promise.resolve();
+  let stopping = false;
   async function dispatch(raw: string): Promise<void> {
+    if (stopping) return;
     let id: unknown = null;
     try {
       const request = record(JSON.parse(raw));
@@ -197,10 +218,10 @@ export async function serve(): Promise<void> {
         case "tools/call": { const params = record(request.params); if (params.name !== "browser") throw Error("Unknown browser tool"); result = await call(params.arguments); break; }
         default: throw Error("Unsupported MCP method");
       }
-      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+      if (!stopping) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 500) : "Browser protocol error";
-      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error: message, outcome: "not-started" }) }] } }) + "\n");
+      if (!stopping) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error: message, outcome: "not-started" }) }] } }) + "\n");
     }
   }
   let queued = 0;
@@ -211,13 +232,32 @@ export async function serve(): Promise<void> {
     }
     queued++; queue = queue.then(() => dispatch(raw)).finally(() => { queued--; });
   });
-  let stopping = false;
-  async function stop(): Promise<void> {
-    if (stopping) return; stopping = true;
-    await engine.close();
-    if (temporary) await rm(artifactRoot, { recursive: true, force: true });
-  }
-  lines.on("close", () => { void queue.then(stop); });
-  process.once("SIGTERM", () => { void stop().finally(() => process.exit(0)); });
-  process.once("SIGINT", () => { void stop().finally(() => process.exit(0)); });
+  return new Promise((finished, failed) => {
+    let closing = false;
+    const finish = (immediate: boolean): void => {
+      if (closing) return;
+      closing = true;
+      if (immediate) {
+        stopping = true;
+        lines.close();
+      }
+      const dispose = async (): Promise<void> => {
+        try {
+          if (!immediate) await queue;
+          stopping = true;
+          await close();
+          finished();
+        } catch (error) { failed(error); }
+        finally {
+          process.off("SIGTERM", onSignal);
+          process.off("SIGINT", onSignal);
+        }
+      };
+      void dispose();
+    };
+    const onSignal = () => finish(true);
+    lines.once("close", () => finish(stopOnDisconnect));
+    process.once("SIGTERM", onSignal);
+    process.once("SIGINT", onSignal);
+  });
 }

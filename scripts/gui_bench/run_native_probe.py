@@ -239,12 +239,16 @@ def core_native_apis_passed(api: dict) -> bool:
 def contract_completed(log_text: str) -> bool:
     # AppHandle.exit() can stop a native event loop without changing main's
     # process exit status. Require positive terminal evidence, not rc=0 alone.
-    return ("Native Tauri DOM probe passed:" in log_text
-            and "Native lifecycle probe passed:" in log_text
-            and subframe_navigation_passed(log_text)
-            and browser_lifecycle_passed(log_text)
-            and "Native observation probe failed:" not in log_text
-            and hard_capabilities(log_text).get("status") != "unverified")
+    from scripts.gui_bench.check_browser_lifecycle_evidence import verify
+    if ("Native Tauri DOM probe passed:" not in log_text
+            or not browser_lifecycle_passed(log_text)
+            or hard_capabilities(log_text).get("status") == "unverified"):
+        return False
+    try:
+        verify(log_text, mode="full")
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return False
+    return True
 
 
 def browser_lifecycle_passed(log_text: str) -> bool:
@@ -297,13 +301,24 @@ def empty_webview_url_passed(log_text: str) -> bool:
         return False
 
 
+def failure_reasons(log_text: str) -> list[str]:
+    """The probe's own verdict, mirrored into the CI console and receipt.
+
+    Evidence and the single failure verdict go to a log that only reaches an
+    artifact. Without the verdict in the job log, a later green rerun leaves
+    nothing that explains the red build. Only the probe's fixed verdict prefix
+    is echoed, never arbitrary page or CLI output."""
+    prefix = "Native observation probe failed: "
+    return [line[len(prefix):].strip()[:300] for line in log_text.splitlines() if line.startswith(prefix)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--macos-titlebar", choices=["standard", "overlay"], default="standard")
     parser.add_argument("--ready-delay-ms", type=int, choices=[0, 6000], default=0,
-                        help="Delay only the test adapter's Ready acknowledgement; never replay navigation")
+                        help="Delay the loopback document response; native service readiness must wait without replay")
     args = parser.parse_args()
     if args.macos_titlebar != "standard" and sys.platform != "darwin":
         parser.error("macOS titlebar variants require a macOS probe")
@@ -333,6 +348,7 @@ def main() -> int:
     finally:
         cleaned = cleanup_profile(directory)
     log_text = (args.evidence_dir / "native-probe.log").read_text(encoding="utf-8", errors="replace")
+    receipt['probe_failure'] = failure_reasons(log_text)
     capabilities = hard_capabilities(log_text)
     receipt['subframe_navigation_passed'] = subframe_navigation_passed(log_text)
     receipt['browser_lifecycle_passed'] = browser_lifecycle_passed(log_text)
@@ -360,6 +376,8 @@ def main() -> int:
     receipt["cleanup_passed"] = cleaned
     receipt.update(exit_code=code, seconds=round(time.monotonic() - start, 3), passed=code == 0 and cleaned and completed, contract_completed=completed)
     (args.evidence_dir / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    for reason in receipt['probe_failure']:
+        print(f"NATIVE_PROBE_FAILURE {reason}")
     print(json.dumps(receipt))
     return 0 if code == 0 and cleaned and completed else 1
 

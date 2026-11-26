@@ -360,13 +360,19 @@ class WebviewTests(unittest.TestCase):
             checks = Contract(call)
             checks.target = Mock(return_value=({'frame_id':'observed'},
                                                {'ref':'n1', 'disabled':False}))
-            with self.subTest(effect=effect), self.assertRaises(AssertionError) as failure:
+            clock = itertools.count(0, .5)
+            with self.subTest(effect=effect), \
+                 patch('scripts.gui_bench.webview_contract.time.sleep'), \
+                 patch('scripts.gui_bench.webview_contract.time.monotonic', side_effect=lambda: next(clock)), \
+                 self.assertRaises(AssertionError) as failure:
                 checks.act('select', 'Reasoning level', value='low')
             self.assertIn('"effect": "' + effect + '"', str(failure.exception))
             self.assertIn('stale_target', str(failure.exception))
             self.assertNotIn('private-transport', str(failure.exception))
-            self.assertEqual(call.call_count, 1)
-            self.assertEqual(call.call_args.args[0], 'perform')
+            # Only a proven unstarted effect is re-driven, and only within the bound.
+            self.assertEqual(call.call_count == 1, effect != 'not_started')
+            self.assertLessEqual(call.call_count, 11)
+            self.assertTrue(all(item.args[0] == 'perform' for item in call.call_args_list))
             self.assertEqual(checks.actions, [])
 
     def test_zero_tab_fixture_loads_canonical_appframe_without_opening_a_page(self):
@@ -422,14 +428,16 @@ class WebviewTests(unittest.TestCase):
     def test_public_discovery_does_not_grant_observation_or_actions(self):
         def denied(op, arguments):
             if op == 'list': return {'available':True,'bound':False}
-            if op == 'observe': raise RuntimeError('native browser is not delegated to this session')
-            return {'ok':False,'effect':'not_started'}
+            if op == 'observe': raise RuntimeError('no browser is bound to this chat')
+            return {'ok':False,'effect':'not_started','message':'no browser is bound to this chat'}
         verify_unbound_discovery(denied)
         faults = [
             ('list', {'available':True,'bound':True}),
             ('list', {'available':True,'bound':False,'tab_id':'other'}),
             ('observe', {'nodes':[]}),
             ('observe', RuntimeError('transport interrupted')),
+            ('observe', RuntimeError('bridge error: no browser is bound to this chat')),
+            ('perform', {'ok':False,'effect':'not_started','message':'invalid action'}),
             ('perform', {'ok':True,'effect':'applied'}),
             ('perform', {'ok':False,'effect':'unknown'}),
         ]
@@ -496,6 +504,107 @@ class WebviewTests(unittest.TestCase):
                           'http://127.0.0.1:0','http://127.0.0.1:65536','http://127.0.0.1:123/path',
                           'http://127.0.0.1:123?key=secret','http://127.0.0.1:123#fragment','ftp://127.0.0.1:123']:
                 with self.assertRaises(ValueError): native_environment(Path(directory),value)
+
+    def test_contract_reobserves_after_a_proven_unstarted_superseded_frame(self):
+        calls = []
+        def call(op, arguments):
+            calls.append((op, arguments))
+            seen = sum(other == 'observe' for other, _ in calls)
+            if op == 'observe':
+                return {'source':{'engine':'tauri-webview'},'frame_id':'frame-%d' % seen,
+                    'nodes':[{'label':'Target','ref':'n%d' % seen,'disabled':False}]}
+            performed = sum(other == 'perform' for other, _ in calls)
+            if performed == 1:
+                return {'ok':False,'effect':'not_started','message':'stale_frame: observe again','token':'private-transport'}
+            if performed == 2: return {'ok':True,'effect':'applied','frame_id':arguments['frame_id']}
+            return {'ok':False,'effect':'not_started','message':'consumed'}
+        with patch('scripts.gui_bench.webview_contract.time.sleep'):
+            contract = Contract(call); contract.act('click','Target')
+        self.assertEqual([op for op, _ in calls],['observe','perform','observe','perform','perform'])
+        # The second request rides the second observation, never the stale frame.
+        self.assertEqual([a['frame_id'] for op, a in calls if op == 'perform'],['frame-1','frame-2','frame-2'])
+        self.assertEqual([a['ref'] for op, a in calls if op == 'perform'],['n1','n2','n2'])
+        self.assertEqual(contract.actions,[dict(action='click',label='Target')])
+        self.assertEqual(contract.denials,['consumed_frame'])
+        self.assertEqual(contract.superseded_frames,
+                         [dict(action='click',label='Target',message='stale_frame: observe again')])
+
+    def test_contract_other_unstarted_rejections_are_not_reobserved(self):
+        for message in ['modal blocks page scrolling; observe dialog scope',
+                        'option is no longer available; observe its option page again',
+                        'observation scope disappeared; observe again',
+                        'no browser is bound to this chat']:
+            calls = []
+            def call(op, arguments):
+                calls.append(op)
+                if op == 'observe':
+                    return {'source':{'engine':'tauri-webview'},'frame_id':'fresh',
+                        'nodes':[{'label':'Target','ref':'n9','disabled':False}]}
+                return {'ok':False,'effect':'not_started','message':message}
+            with self.subTest(message=message), self.assertRaises(AssertionError):
+                Contract(call).act('click','Target')
+            self.assertEqual(calls,['observe','perform'])
+
+    def test_contract_superseded_frame_retry_is_bounded_and_never_records_an_action(self):
+        calls = []
+        def call(op, arguments):
+            calls.append(op)
+            if op == 'observe':
+                return {'source':{'engine':'tauri-webview'},'frame_id':'fresh',
+                    'nodes':[{'label':'Target','ref':'n9','disabled':False}]}
+            return {'ok':False,'effect':'not_started','message':'native browser is busy; no action was scheduled'}
+        clock = itertools.count(0, .5)
+        contract = Contract(call)
+        with patch('scripts.gui_bench.webview_contract.time.sleep'), \
+             patch('scripts.gui_bench.webview_contract.time.monotonic', side_effect=lambda: next(clock)), \
+             self.assertRaisesRegex(AssertionError,'did not settle'):
+            contract.act('click','Target')
+        self.assertEqual(calls.count('perform'), calls.count('observe'))
+        self.assertLessEqual(calls.count('perform'), 11)
+        self.assertEqual((contract.actions, contract.denials), ([], []))
+
+    def test_contract_event_inside_a_read_repeats_only_the_observation(self):
+        calls = []
+        def call(op, arguments):
+            calls.append(op)
+            if op == 'observe':
+                # A navigation policy event or layout re-apply landed inside the native read.
+                if calls.count('observe') == 1: raise RuntimeError('browser binding changed')
+                return {'source':{'engine':'tauri-webview'},'frame_id':'fresh',
+                    'nodes':[{'label':'Target','ref':'n9','disabled':False}]}
+            return ({'ok':True,'effect':'applied','frame_id':arguments['frame_id']} if calls.count('perform') == 1
+                    else {'ok':False,'effect':'not_started','message':'consumed'})
+        with patch('scripts.gui_bench.webview_contract.time.sleep'):
+            contract = Contract(call); contract.act('click','Target')
+        self.assertEqual(calls,['observe','observe','perform','perform'])
+        self.assertEqual(contract.readiness_denials,['browser binding changed'])
+        self.assertEqual((contract.actions, contract.superseded_frames),([dict(action='click',label='Target')],[]))
+
+    def test_contract_event_inside_an_action_is_reobserved_from_a_not_started_receipt(self):
+        calls = []
+        def call(op, arguments):
+            calls.append(op)
+            if op == 'observe':
+                return {'source':{'engine':'tauri-webview'},'frame_id':'fresh',
+                    'nodes':[{'label':'Target','ref':'n9','disabled':False}]}
+            performed = calls.count('perform')
+            if performed == 1: return {'ok':False,'effect':'not_started','message':'browser binding changed'}
+            if performed == 2: return {'ok':True,'effect':'applied','frame_id':arguments['frame_id']}
+            return {'ok':False,'effect':'not_started','message':'consumed'}
+        with patch('scripts.gui_bench.webview_contract.time.sleep'):
+            contract = Contract(call); contract.act('click','Target')
+        self.assertEqual(calls,['observe','perform','observe','perform','perform'])
+        self.assertEqual(contract.superseded_frames,[dict(action='click',label='Target',message='browser binding changed')])
+        self.assertEqual(contract.actions,[dict(action='click',label='Target')])
+
+    def test_contract_permanent_read_faults_are_raised_at_once(self):
+        # Only a refusal a later read resolves is repeated; anything else is a defect to show.
+        for message in ['native observation is too large','invalid native observation arguments',
+                        'browser tab is not open','guest caller was authorized']:
+            call = Mock(side_effect=RuntimeError(message))
+            with self.subTest(message=message), self.assertRaises(RuntimeError):
+                Contract(call).observe()
+            self.assertEqual(call.call_count, 1)
 
     def test_contract_unknown_effect_is_never_replayed(self):
         calls = []

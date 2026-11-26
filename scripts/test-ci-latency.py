@@ -47,7 +47,7 @@ class LatencyContract(unittest.TestCase):
         self.assertLess(body.index('CARGO_PROFILE_RELEASE_STRIP=none'), body.index('Swatinem/rust-cache@v2'))
         envs = re.search(r'env-vars: (.*)', body).group(1).split()
         self.assertEqual(envs, ['CARGO', 'CC', 'CFLAGS', 'CXX', 'CMAKE', 'RUST',
-                               'XHARNESS_ACCOUNT_ORIGIN', 'XHARNESS_INSTALLATION_ENDPOINT', 'XHARNESS_RELEASE_CHANNEL'])
+                               'XHARNESS_INSTALLATION_ENDPOINT', 'XHARNESS_RELEASE_CHANNEL'])
         self.assertNotIn('cache-workspace-crates: true', body, 'Do not bloat the already large native cache blindly')
         self.assertIn('shared-key: desktop-native-${{ matrix.target }}', body)
         self.assertIn('cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets', body)

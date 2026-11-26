@@ -255,6 +255,11 @@ impl Capture {
 
 fn record(journal: &watch::Sender<Journal>, projection: &mut Projection, event: &Value) {
     journal.send_if_modified(|journal| {
+        // Closing a page or stopping capture revokes the journal before
+        // aborting the worker. An already-read frame must not refill it.
+        if journal.state != "recording" {
+            return false;
+        }
         let prior = (journal.latest, journal.incomplete);
         projection.handle(event, journal);
         prior != (journal.latest, journal.incomplete)
@@ -517,6 +522,29 @@ mod tests {
 
     fn event(method: &str, params: Value) -> Value {
         json!({"method":method,"params":params})
+    }
+
+    #[test]
+    fn late_events_cannot_refill_a_revoked_journal() {
+        let (journal, _) = watch::channel(Journal::default());
+        let mut projection = Projection::default();
+        let frame = event(
+            "Runtime.consoleAPICalled",
+            json!({
+                "type":"log","args":[{"type":"string","value":"fixture"}]
+            }),
+        );
+        record(&journal, &mut projection, &frame);
+        assert_eq!(journal.borrow().latest, 1);
+        journal.send_modify(|state| {
+            state.state = "stopped";
+            state.events.clear();
+        });
+        record(&journal, &mut projection, &frame);
+        let state = journal.borrow();
+        assert_eq!(state.latest, 1);
+        assert!(state.events.is_empty());
+        assert!(state.page(0, None, 1).is_err());
     }
 
     #[test]

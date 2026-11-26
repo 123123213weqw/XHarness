@@ -305,22 +305,13 @@ impl SessionToolFactory for NativeToolFactory {
             mcp.disconnect_owner(session_id).await;
         }
         if let Some(browser) = self.native_browser.get() {
-            if !browser.supports_webview() {
-                return browser.release_local(session_id).await;
+            // The user's retirement of a chat can clean up even a manually
+            // controlled page. IPC failure must not block durable chat deletion.
+            if browser.retire_owned(session_id).await.is_err() {
+                xharness_diagnostics::diagnostic_stderr!(
+                    "browser cleanup not confirmed during session retirement"
+                );
             }
-            // Session retirement owns browser lifetime, not renderer visibility.
-            let _ = browser
-                .headless()
-                .call(
-                    session_id,
-                    "control",
-                    serde_json::json!({"action":"close"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    &tokio_util::sync::CancellationToken::new(),
-                )
-                .await;
         }
         Ok(())
     }

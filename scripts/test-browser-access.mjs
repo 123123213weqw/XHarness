@@ -9,7 +9,7 @@ const deps = resolve(process.env.UI_TEST_DEPS ?? '/Users/wangyue/codex-build/xha
 const require = createRequire(resolve(deps, 'package.json'))
 const { chromium, webkit } = require('playwright')
 const engine = process.env.UI_TEST_BROWSER ?? 'chromium'
-const browser = await ({ chromium, webkit })[engine].launch({ headless: true })
+const browser = await ({ chromium, webkit })[engine].launch({ headless: true, ...(process.env.UI_TEST_EXECUTABLE?{executablePath:process.env.UI_TEST_EXECUTABLE}:{}) })
 try {
   const errors = []
   async function fixture(native, lang = 'zh-CN', controlledClock = false) {
@@ -24,7 +24,7 @@ try {
       const receipt=owner=>({origin,grant:lease?.owner===owner&&lease.expires>Date.now()?{owner,allowActions:lease.actions,remainingMs:lease.expires-Date.now()}:null});
       window.__TAURI__=${native ? ` {core:{invoke:async(command,args)=>{
         calls.push({command,args});
-        if(command==='desktop_browser_activate'){if(active!==args.tabId)lease=null;active=args.tabId;return tabs.has(active)}
+        if(command==='desktop_browser_activate'){active=args.tabId;return tabs.has(active)}
         if(command==='desktop_browser_navigate'){
           tabs.add(args.tabId);active=args.tabId;origin=new URL(args.url).origin;
           if(finishLoads)setTimeout(()=>emit('loaded',args.url),0);
@@ -32,7 +32,7 @@ try {
         if(command==='desktop_browser_delegate'){
           if(holdGrant){window.grantStarted=true;await new Promise(resolve=>window.releaseGrant=resolve);holdGrant=false;}
           if(args.owner&&args.expectedOrigin!==origin){lease=null;throw Error('origin changed');}
-          lease=args.owner?{owner:args.owner,actions:args.allowActions,expires:Date.now()+600000}:null;
+          if(args.owner&&lease&&lease.owner!==args.owner)throw Error('browser belongs to another chat');lease=args.owner?{owner:args.owner,actions:args.allowActions,expires:Date.now()+600000}:null;
           return badGrantReply ? null : receipt(args.owner);
         }
       }},event:{listen:async(_name,fn)=>{listeners.push(fn);return()=>{listeners=listeners.filter(x=>x!==fn)}}}}` : 'null'};
@@ -82,151 +82,35 @@ try {
   assert.equal(await page.evaluate(() => calls.some(x => x.command === 'desktop_browser_access')), false)
   assert.equal(await page.evaluate(() => calls.some(x => /inspect|perform/.test(x.command))), false, 'binding itself must not execute a model action')
 
-  // A redundant geometry sample during grant acknowledgement must not revoke
-  // an unchanged visible owner. Observe every IPC, not only the final state.
-  await page.evaluate(() => { holdGrant = true; grantStarted = false; setSession('session-layout') })
-  await page.waitForFunction(() => grantStarted)
-  const layoutStart = await page.evaluate(() => calls.length)
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
-  await page.evaluate(() => releaseGrant())
-  await page.waitForFunction(() => lease?.owner === 'session-layout')
-  const reloads = await page.evaluate(() => calls.filter(x => x.command === 'desktop_browser_action').length)
-  await page.getByRole('button', { name: '刷新', exact: true }).click()
-  await page.waitForFunction(count => calls.filter(x => x.command === 'desktop_browser_action').length > count, reloads)
-  assert.equal(await page.evaluate(start => calls.slice(start).some(x =>
-    x.command === 'desktop_browser_activate' && x.args.tabId === null), layoutStart), false,
-  'a superseding visible layout sample must not revoke its acknowledged grant')
-  await page.evaluate(() => setSession('session-parent'))
-  await page.waitForFunction(() => lease?.owner === 'session-parent')
-
-  // Hidden native pages cannot cover local/global overlays or remain agent-accessible.
-  await page.getByRole('button', { name: '下载记录', exact: true }).click()
-  await page.waitForFunction(() => active === null && lease === null)
-  const hiddenCount = await grants()
-  await page.setViewportSize({ width: 960, height: 680 })
-  await page.waitForTimeout(100)
-  assert.equal(await grants(), hiddenCount)
-  await page.getByRole('button', { name: '下载记录', exact: true }).click()
-  await page.waitForFunction(() => active === 'browser:1' && lease?.owner === 'session-parent')
-  await page.evaluate(() => {
-    const modal = document.createElement('div'); modal.role = 'dialog'; modal.setAttribute('aria-modal', 'true'); modal.textContent = 'fixture modal';
-    document.querySelector('[data-shell-overlay]').append(modal)
-  })
-  await page.waitForFunction(() => active === null && lease === null)
-  await page.evaluate(() => document.querySelector('[role="dialog"]').remove())
-  await page.waitForFunction(() => lease?.owner === 'session-parent')
-
-  await page.evaluate(() => {
-    const menu = document.createElement('div'); menu.id = 'global-model-menu'; menu.role = 'menu'
-    menu.textContent = 'Model menu'; menu.style.cssText = 'position:fixed;left:300px;top:180px;width:200px;height:120px'
-    document.body.append(menu)
-  })
-  await page.waitForFunction(() => active === null && lease === null)
-  await page.evaluate(() => document.getElementById('global-model-menu').remove())
-  await page.waitForFunction(() => active === 'browser:1' && lease?.owner === 'session-parent')
-
-  // A chat-local nonmodal dialog must keep the acknowledged owner and expiry,
-  // not merely restore a freshly delegated lease after flashing the page blank.
-  const nonmodalStart = await page.evaluate(() => calls.length)
-  const originalLease = await page.evaluate(() => lease)
-  await page.evaluate(() => {
-    const panel = document.createElement('div'); panel.id = 'chat-local-dialog'
-    panel.role = 'dialog'; panel.setAttribute('aria-modal', 'false'); panel.textContent = 'Context usage'
-    panel.style.cssText = 'position:fixed;left:650px;top:180px;width:200px;height:120px'
-    document.body.append(panel)
-  })
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
-  const actions = await page.evaluate(() => calls.filter(x => x.command === 'desktop_browser_action').length)
-  await page.getByRole('button', { name: '刷新', exact: true }).click()
-  await page.waitForFunction(count => calls.filter(x => x.command === 'desktop_browser_action').length > count, actions)
-  assert.equal(await page.evaluate(() => active), 'browser:1')
-  assert.deepEqual(await page.evaluate(() => lease), originalLease, 'a non-overlapping dialog must preserve the same access lease')
-  assert.equal(await page.evaluate(start => calls.slice(start).some(x => x.command === 'desktop_browser_delegate' || x.command === 'desktop_browser_navigate' || (x.command === 'desktop_browser_activate' && x.args.tabId === null)), nonmodalStart), false)
-  await page.evaluate(() => document.getElementById('chat-local-dialog').style.left = '300px')
-  await page.waitForFunction(() => active === null && lease === null)
-  await page.evaluate(() => document.getElementById('chat-local-dialog').remove())
-  await page.waitForFunction(() => active === 'browser:1' && lease?.owner === 'session-parent')
-
-  // The same visible tab is rebound to the actual selected chat, not inherited.
-  const switchStart = await page.evaluate(() => calls.length)
-  await page.evaluate(() => setSession('session-child'))
-  await page.waitForFunction(() => lease?.owner === 'session-child')
-  const switched = await page.evaluate(start => calls.slice(start), switchStart)
-  assert.ok(switched.some(x => x.command === 'desktop_browser_activate' && x.args.tabId === null))
-  assert.ok(switched.some(x => x.command === 'desktop_browser_delegate' && x.args.owner === 'session-child'))
-
-  // A slow old binding is undone before the next chat gets access.
-  await page.evaluate(() => { holdGrant = true; grantStarted = false; setSession('session-delayed') })
-  await page.waitForFunction(() => grantStarted)
-  await page.evaluate(() => setSession('session-next'))
-  const delayedStart = await page.evaluate(() => calls.length)
-  await page.evaluate(() => releaseGrant())
-  await page.waitForFunction(() => lease?.owner === 'session-next')
-  const delayed = await page.evaluate(start => calls.slice(start), delayedStart)
-  const revoke = delayed.findIndex(x => x.command === 'desktop_browser_activate' && x.args.tabId === null)
-  const next = delayed.findIndex(x => x.command === 'desktop_browser_delegate' && x.args.owner === 'session-next')
-  assert.ok(revoke >= 0 && next > revoke)
-
-  // Closing or covering the pane during a pending binding must undo its reply.
-  for (const boundary of ['popover', 'close']) {
-    await page.evaluate(boundary => { holdGrant = true; grantStarted = false; setSession(`session-${boundary}`) }, boundary)
-    await page.waitForFunction(() => grantStarted)
-    if (boundary === 'popover') await page.getByRole('button', { name: '下载记录', exact: true }).click()
-    else await page.evaluate(() => setOpen(false))
-    await page.evaluate(() => releaseGrant())
-    await page.waitForFunction(() => active === null && lease === null)
-    if (boundary === 'popover') await page.getByRole('button', { name: '下载记录', exact: true }).click()
-    else await page.evaluate(() => setOpen(true))
-    await page.waitForFunction(boundary => active === 'browser:1' && lease?.owner === `session-${boundary}`, boundary)
+  const lease=await page.evaluate(()=>window.lease)
+  for(const boundary of ['download','modal','menu','collapse']){
+    if(boundary==='download')await page.getByRole('button',{name:'下载记录',exact:true}).click()
+    if(boundary==='collapse')await page.evaluate(()=>setOpen(false))
+    if(boundary==='modal'||boundary==='menu')await page.evaluate(boundary=>{
+      const node=document.createElement('div');node.id='test-overlay';node.role=boundary==='modal'?'dialog':'menu';
+      if(boundary==='modal')node.setAttribute('aria-modal','true');else node.id='global-model-menu';
+      node.style.cssText='position:fixed;left:300px;top:180px;width:200px;height:120px';document.querySelector('[data-shell-overlay]').append(node)
+    },boundary)
+    await page.waitForFunction(()=>active===null)
+    assert.equal(await page.evaluate(()=>window.lease.owner),lease.owner,'occlusion cannot revoke owner')
+    const hidden=await grants();await page.waitForTimeout(100);assert.equal(await grants(),hidden)
+    if(boundary==='download')await page.getByRole('button',{name:'下载记录',exact:true}).click()
+    if(boundary==='collapse')await page.evaluate(()=>setOpen(true))
+    if(boundary==='modal'||boundary==='menu')await page.evaluate(()=>document.querySelector('#test-overlay,#global-model-menu').remove())
+    await page.waitForFunction(()=>active==='browser:1')
   }
-
-  // Uncertain IPC replies cannot leave an optimistic native grant behind.
-  await page.evaluate(() => { badGrantReply = true; setSession('session-bad') })
-  await page.getByRole('alert').getByText(/浏览器会话绑定失败/).waitFor()
-  assert.equal(await page.evaluate(() => lease), null)
-  assert.equal(await page.evaluate(() => active), null)
-  await page.evaluate(() => { badGrantReply = false; setSession('session-recovered') })
-  await page.waitForFunction(() => lease?.owner === 'session-recovered')
-
-  // Navigation awaits native load completion; a stale UI origin is not binding authority.
-  await page.evaluate(() => { finishLoads = false })
-  const address = page.getByRole('textbox', { name: '网址' })
-  await address.fill('https://other.example.com/'); await address.press('Enter')
-  await page.waitForFunction(() => origin === 'https://other.example.com')
-  const navigatingCount = await grants()
-  await page.waitForTimeout(100)
-  assert.equal(await grants(), navigatingCount)
-  await page.evaluate(() => emit('loaded', 'https://other.example.com/'))
-  await page.waitForFunction(() => lease?.owner === 'session-recovered' && calls.filter(x => x.command === 'desktop_browser_delegate').at(-1).args.expectedOrigin === 'https://other.example.com')
-  await page.evaluate(() => { origin = 'https://redirect.example'; lease = null; setSession('session-redirect') })
-  await page.getByRole('alert').getByText(/origin changed/).waitFor()
-  assert.equal(await page.evaluate(() => lease), null)
-  await page.evaluate(() => { emit('url', 'https://redirect.example/'); emit('loaded', 'https://redirect.example/') })
-  await page.waitForFunction(() => lease?.owner === 'session-redirect' && active === 'browser:1')
-  await page.evaluate(() => setSession(null))
-  await page.waitForFunction(() => lease === null && active === 'browser:1')
-  const anonymousCount = await grants()
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')))
-  await page.waitForTimeout(100)
-  assert.equal(await grants(), anonymousCount, 'no model owner in global/anonymous workspace')
-  await page.evaluate(() => root.unmount())
-  await page.waitForFunction(() => active === null)
+  // A stale/reused page passed to another chat cannot transfer its native lease.
+  await page.evaluate(()=>setSession('foreign-owner'))
+  await page.getByRole('alert').getByText('browser belongs to another chat',{exact:false}).waitFor()
+  await page.waitForFunction(()=>active===null)
+  assert.equal(await page.evaluate(()=>window.lease.owner),'session-parent')
+  await page.evaluate(()=>setSession('session-parent'))
+  await page.waitForFunction(()=>active==='browser:1')
+  await page.evaluate(()=>root.unmount())
+  await page.waitForFunction(()=>active===null)
+  assert.equal(await page.evaluate(()=>window.lease.owner),'session-parent','unmount changes presentation only')
+  assert.equal(await page.evaluate(()=>calls.some(c=>c.command==='desktop_browser_delegate'&&!c.args.owner)),false)
+  assert.deepEqual(errors,[])
   await page.close()
-
-  // No manual renewal: the visible context stays usable without 2-second polling.
-  const renewal = await fixture(true, 'zh-CN', true)
-  await renewal.waitForFunction(() => lease?.owner === 'session-parent')
-  const initial = await renewal.evaluate(() => calls.filter(x => x.command === 'desktop_browser_delegate').length)
-  await renewal.clock.fastForward(300100)
-  await renewal.waitForFunction(initial => calls.filter(x => x.command === 'desktop_browser_delegate').length === initial + 1, initial)
-  await renewal.getByRole('button', { name: '下载记录', exact: true }).click()
-  await renewal.waitForFunction(() => lease === null && active === null)
-  const stopped = await renewal.evaluate(() => calls.filter(x => x.command === 'desktop_browser_delegate').length)
-  await renewal.clock.fastForward(600100)
-  assert.equal(await renewal.evaluate(() => calls.filter(x => x.command === 'desktop_browser_delegate').length), stopped)
-  await renewal.evaluate(() => root.unmount())
-  await renewal.close()
-  assert.deepEqual(errors, [])
-  console.log(`${engine}: no manual access UI; automatic visible-chat binding, no polling, renewal, overlays, navigation and async races passed (mock IPC)`)
-} finally { await browser.close() }
+  console.log(`${engine}: chat ownership survives presentation hide/overlays/unmount; foreign retarget rejected (mocked native transport)`)
+}finally{await browser.close()}

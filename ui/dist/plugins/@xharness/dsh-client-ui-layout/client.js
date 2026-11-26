@@ -41,7 +41,6 @@ function apply(ctx) {
                 'sidebar': { kind: 'single', scope: 'root' },
                 'conversation': { kind: 'single', scope: 'session-maybe' },
                 'plugins.center': { kind: 'single', scope: 'root' },
-                'assistant.center': { kind: 'single', scope: 'root' },
                 'swarm.center': { kind: 'single', scope: 'root' },
                 'work.center.tasks': { kind: 'single', scope: 'root' },
                 'work.center.automations': { kind: 'single', scope: 'root' },
@@ -173,7 +172,6 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
         return current !== undefined && s.byId[current]?.blank === false ? current : undefined;
     });
     const frameRef = (0, react_1.useRef)(null);
-    const [assistantVisible, setAssistantVisible] = (0, react_1.useState)(false);
     const [swarmVisible, setSwarmVisible] = (0, react_1.useState)(false);
     const { route: { page: centerPage } } = (0, react_1.useSyncExternalStore)(navigation.subscribe, navigation.getSnapshot);
     const closeCenterPage = navigation.close;
@@ -195,48 +193,6 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
     const space = spaces[spaceKey] ?? workspace_pane_1.xhWorkspaceEmpty;
     const nextWorkspaceId = (0, react_1.useRef)((0, workspace_pane_1.xhNextWorkspaceId)(spaces));
     (0, react_1.useEffect)(() => {
-        const native = window.__TAURI__;
-        if (!native)
-            return;
-        let disposed = false, stop;
-        native.event.listen('xharness-headless-page', event => {
-            if (disposed)
-                return;
-            const payload = (0, runtime_types_1.objectValue)(event.payload);
-            if (typeof payload.owner !== 'string' || !payload.owner || payload.owner.length > 128)
-                return;
-            const owner = payload.owner;
-            if (payload.closed === true) {
-                setSpaces(all => { const space = all[owner]; if (!space)
-                    return all; const items = space.items.filter(item => item.id !== payload.tabId); return { ...all, [owner]: { ...space, items, activeId: items.some(item => item.id === space.activeId) ? space.activeId : items[0]?.id ?? null } }; });
-                return;
-            }
-            if (typeof payload.tabId !== 'string' || !/^headless:[0-9a-f]{32}$/.test(payload.tabId) || typeof payload.url !== 'string')
-                return;
-            const id = payload.tabId, url = payload.url;
-            try {
-                const parsed = new URL(url);
-                if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
-                    return;
-            }
-            catch {
-                return;
-            }
-            setSpaces(all => {
-                const space = all[owner] ?? workspace_pane_1.xhWorkspaceEmpty;
-                const existing = space.items.find(item => item.id === id);
-                const item = { id, kind: 'browser', source: 'browser', title: new URL(url).hostname, entries: [...(existing?.entries ?? []).slice(-49), url], position: Math.min(existing?.entries.length ?? 0, 49) };
-                const items = space.items.filter(item => !item.id.startsWith('headless:') && !(item.id === space.activeId && item.kind === 'browser' && item.entries.length === 0));
-                // Background chats are updated without selecting them or stealing focus.
-                return { ...all, [owner]: { items: [...items, item], activeId: id, collapsed: existing !== undefined ? space.collapsed === true : owner !== spaceKeyRef.current } };
-            });
-        }).then(unlisten => { if (disposed)
-            unlisten();
-        else
-            stop = unlisten; }).catch(() => { });
-        return () => { disposed = true; stop?.(); };
-    }, []);
-    (0, react_1.useEffect)(() => {
         if (browserRestored)
             (0, workspace_pane_1.xhSaveBrowserSpaces)(spaces);
         nextWorkspaceId.current = Math.max(nextWorkspaceId.current, (0, workspace_pane_1.xhNextWorkspaceId)(spaces));
@@ -253,39 +209,56 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
             setBrowserRestored(true); });
         return () => { alive = false; };
     }, []);
+    const pendingOwnedPages = (0, react_1.useRef)(new Map());
+    const acceptOwnedPage = (page) => {
+        setSpaces(all => {
+            const space = all[page.owner] ?? workspace_pane_1.xhWorkspaceEmpty;
+            if (page.closed)
+                return { ...all, [page.owner]: (0, workspace_pane_1.xhWorkspaceClose)(space, page.tabId) };
+            const url = page.url;
+            if (!url)
+                return all;
+            const existing = space.items.find(item => item.id === page.tabId);
+            if (existing?.entries[existing.position] === url)
+                return all;
+            const entries = [...(existing?.entries ?? []).slice(-49), url];
+            const item = { id: page.tabId, kind: 'browser', source: 'browser', title: new URL(url).hostname, entries, position: entries.length - 1 };
+            if (existing)
+                return { ...all, [page.owner]: { ...space, items: space.items.map(value => value.id === page.tabId ? item : value) } };
+            const blank = space.items.find(value => value.id === space.activeId && value.kind === 'browser' && value.entries.length === 0);
+            const replaced = space.items.find(value => page.backend === 'browser' && value.id.startsWith('headless:'));
+            const replace = blank ?? replaced;
+            const items = [...space.items.filter(value => value.id !== replace?.id && !(page.backend === 'browser' && value.id.startsWith('headless:'))), item];
+            const selected = items.some(value => value.id === space.activeId) ? space.activeId : page.tabId;
+            return { ...all, [page.owner]: { items, activeId: selected, collapsed: space.collapsed ?? page.owner !== spaceKeyRef.current } };
+        });
+    };
     (0, react_1.useEffect)(() => {
         const native = window.__TAURI__;
         if (!native?.core?.invoke || !native.event?.listen)
             return;
-        return (0, model_control_1.listenModelBrowser)(native, {
-            currentOwner: () => spaceKeyRef.current,
-            ready: () => restoredRef.current,
-            open: request => {
-                const item = { id: `browser:${request.requestId}`, kind: 'browser', source: 'browser',
-                    modelRequestId: request.requestId, title: new URL(request.url).hostname, entries: [request.url], position: 0 };
-                setSpaces(all => ({ ...all, [request.owner]: (0, workspace_pane_1.xhWorkspaceOpen)(all[request.owner] ?? workspace_pane_1.xhWorkspaceEmpty, item, false) }));
-            },
-            close: async (request) => {
-                const current = spacesRef.current[request.owner];
-                if (spaceKeyRef.current !== request.owner || current?.activeId !== request.tabId
-                    || !current.items.some(item => item.id === request.tabId && item.kind === 'browser'))
-                    return false;
-                // Remove presentation first so pending layout work observes unmount.
-                // Destruction must bypass the navigation queue, which may be awaiting
-                // a slow page callback. Exact owner+ID prevents closing its successor.
-                window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id: request.tabId } }));
-                setSpaces(all => ({ ...all, [request.owner]: (0, workspace_pane_1.xhWorkspaceClose)(all[request.owner] ?? workspace_pane_1.xhWorkspaceEmpty, request.tabId) }));
-                await native.core.invoke('desktop_browser_close', { tabId: request.tabId });
-                return true;
-            },
-            cancel: requestId => {
-                window.dispatchEvent(new CustomEvent('xharness:browser-closing', { detail: { id: `browser:${requestId}` } }));
-                setSpaces(all => Object.fromEntries(Object.entries(all).map(([owner, space]) => [owner,
-                    space.items.some(item => item.modelRequestId === requestId) ? (0, workspace_pane_1.xhWorkspaceClose)(space, `browser:${requestId}`) : space])));
-                void native.core.invoke('desktop_browser_close', { tabId: `browser:${requestId}` }).catch(() => { });
-            },
+        return (0, model_control_1.listenOwnedBrowser)(native, page => {
+            if (!restoredRef.current) {
+                pendingOwnedPages.current.set(page.tabId, page);
+                if (pendingOwnedPages.current.size > 128) {
+                    const oldest = pendingOwnedPages.current.keys().next().value;
+                    if (oldest)
+                        pendingOwnedPages.current.delete(oldest);
+                    console.error("Browser presentation queue capacity reached");
+                }
+                return;
+            }
+            acceptOwnedPage(page);
         });
     }, []);
+    (0, react_1.useEffect)(() => {
+        if (!browserRestored)
+            return;
+        const pending = [...pendingOwnedPages.current.values()];
+        pendingOwnedPages.current.clear();
+        for (const page of pending)
+            acceptOwnedPage(page);
+    }, [browserRestored]);
     const [workspaceWidth, setWorkspaceWidth] = (0, react_1.useState)(440);
     const updateSpace = (fn) => setSpaces(all => {
         const key = spaceKeyRef.current;
@@ -300,10 +273,27 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
         const key = detail.sessionId ?? spaceKeyRef.current;
         setSpaces(all => ({ ...all, [key]: (0, workspace_pane_1.xhWorkspaceOpen)(all[key] ?? workspace_pane_1.xhWorkspaceEmpty, item, !fresh) }));
     };
+    const closingHeadless = (0, react_1.useRef)(new Set());
+    const [browserCloseError, setBrowserCloseError] = (0, react_1.useState)();
     const closeWorkspace = (id) => {
         const panel = space.items.find(item => item.id === id && item.kind === 'plugin');
         if (panel) {
             window.dispatchEvent(new CustomEvent('xharness:plugin-panel-close-request', { detail: { capability: panel.source } }));
+            return;
+        }
+        if (id?.startsWith('headless:') && space.items.some(item => item.id === id)) {
+            const native = window.__TAURI__, owner = spaceKeyRef.current;
+            if (!native?.core?.invoke || closingHeadless.current.has(id))
+                return;
+            closingHeadless.current.add(id);
+            setBrowserCloseError(undefined);
+            // Do not hide a still-running manual session on an uncertain close.
+            void native.core.invoke('desktop_headless_control', { owner, tabId: id, arguments: { action: 'close' } }).then(raw => {
+                const receipt = (0, runtime_types_1.objectValue)(raw);
+                if (receipt.ok !== true || receipt.closed !== true || receipt.tab_id !== id)
+                    throw Error('浏览器未确认已关闭');
+                setSpaces(all => all[owner] ? { ...all, [owner]: (0, workspace_pane_1.xhWorkspaceClose)(all[owner], id) } : all);
+            }).catch(() => setBrowserCloseError({ owner, message: '未确认浏览器已关闭，保留当前标签。' })).finally(() => closingHeadless.current.delete(id));
             return;
         }
         if (id === 'tool')
@@ -435,7 +425,7 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
                     const target = event.target;
                     // Shell controls and peer page entries own their transitions. Do not
                     // insert an intermediate chat route (or close the replayed destination).
-                    if (target instanceof Element && target.closest('[data-shell-navigation],[data-sidebar-toggle],[data-xharness-assistant-nav],[data-xharness-plugin-nav],[data-xharness-work-nav]'))
+                    if (target instanceof Element && target.closest('[data-shell-navigation],[data-sidebar-toggle],[data-xharness-plugin-nav],[data-xharness-work-nav]'))
                         return;
                     if (centerPage !== 'chat')
                         closeCenterPage();
@@ -449,12 +439,12 @@ function AppFrame({ useStore, useSessions, actions, navigation, renderSlot, }) {
                         collapsed: sidebarCollapsed,
                         width: sidebarContentWidth,
                         navigation,
-                    }) }) }), (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(CenterColumn, { swarm: centerPage === 'swarm', children: (0, jsx_runtime_1.jsxs)("div", { className: "xhfeature-shell", "data-swarm-active": centerPage === 'swarm' || undefined, children: [(0, jsx_runtime_1.jsx)("div", { className: "xhswarm-seat", hidden: centerPage !== 'swarm', children: centerPage === 'swarm' && renderSlot('swarm.center', { showConversation: setSwarmVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhassistant-seat", hidden: centerPage !== 'assistant', children: centerPage === 'assistant' && renderSlot('assistant.center', { showConversation: setAssistantVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhwork-conversation", hidden: centerPage !== 'chat' && !(centerPage === 'assistant' && assistantVisible) && !(centerPage === 'swarm' && swarmVisible), "aria-label": centerPage === 'assistant' ? 'Little X chat' : undefined, children: renderSlot('conversation', {}) }), centerPage === 'plugins' && (0, jsx_runtime_1.jsxs)("main", { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px clamp(20px, 5vw, 56px)' }, children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", style: { cursor: 'pointer', background: 'none', border: 0, color: 'var(--dsw-alias-label-secondary)', padding: '0 0 24px', font: 'inherit' }, "aria-label": "Back to chat", onClick: closeCenterPage, children: ["\u2190 ", navigator.language.startsWith('zh') ? '返回对话' : 'Back to chat'] }), renderSlot('plugins.center', {})] }), centerPage === 'work' && (0, jsx_runtime_1.jsx)(WorkCenter_1.WorkCenter, { close: closeCenterPage, renderTasks: () => renderSlot('work.center.tasks', { openSession: openWorkSession }), renderAutomations: () => renderSlot('work.center.automations', { openSession: openWorkSession }), renderExecutions: () => renderSlot('work.center.executions', { openSession: openWorkSession }) })] }) }), workspaceDrawer && (0, jsx_runtime_1.jsx)("button", { type: "button", className: AppFrame_styles_1.default.workspaceScrim, "aria-label": "\u5173\u95ED\u5DE5\u4F5C\u533A", onClick: () => updateSpace(value => ({ ...value, collapsed: true })) }), (0, jsx_runtime_1.jsx)(DetailsColumn, { children: (0, jsx_runtime_1.jsx)(workspace_pane_1.XhWorkspacePane, { space: space, spaces: spaces, open: workspaceOpen, sessionId: spaceKey === '__global__' ? null : spaceKey, renderSlot: renderSlot, onSelect: id => updateSpace(value => ({ ...value, activeId: id })), onClose: closeWorkspace, onUpdate: updateItem, onUpdateOwner: (owner, id, patch) => setSpaces(all => {
-                                const prior = all[owner];
-                                if (!prior?.items.some(item => item.id === id))
-                                    return all;
-                                return { ...all, [owner]: { ...prior, items: prior.items.map(item => item.id === id ? { ...item, ...patch } : item) } };
-                            }), onNewBrowser: () => openWorkspace('browser', true) }) })] }), (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.overlayLayer, "data-shell-overlay": true, children: renderSlot('shell.overlay', {}) }), !sidebarCollapsed && !sidebarDrawer && (0, jsx_runtime_1.jsx)(DragHandle, { side: "sidebar", left: cols.sidebar, onStart: onSidebarStart, onDrag: onSidebarDrag, onEnd: onDragEnd }), workspaceDockWidth > 0 && (0, jsx_runtime_1.jsx)(DragHandle, { side: "details", left: viewport - workspaceDockWidth, onStart: onWorkspaceStart, onDrag: onWorkspaceDrag, onEnd: onDragEnd })] }));
+                    }) }) }), (0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsx)(CenterColumn, { swarm: centerPage === 'swarm', children: (0, jsx_runtime_1.jsxs)("div", { className: "xhfeature-shell", "data-swarm-active": centerPage === 'swarm' || undefined, children: [(0, jsx_runtime_1.jsx)("div", { className: "xhswarm-seat", hidden: centerPage !== 'swarm', children: centerPage === 'swarm' && renderSlot('swarm.center', { showConversation: setSwarmVisible }) }), (0, jsx_runtime_1.jsx)("div", { className: "xhwork-conversation", hidden: centerPage !== 'chat' && !(centerPage === 'swarm' && swarmVisible), children: renderSlot('conversation', {}) }), centerPage === 'plugins' && (0, jsx_runtime_1.jsxs)("main", { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px clamp(20px, 5vw, 56px)' }, children: [(0, jsx_runtime_1.jsxs)("button", { type: "button", style: { cursor: 'pointer', background: 'none', border: 0, color: 'var(--dsw-alias-label-secondary)', padding: '0 0 24px', font: 'inherit' }, "aria-label": "Back to chat", onClick: closeCenterPage, children: ["\u2190 ", navigator.language.startsWith('zh') ? '返回对话' : 'Back to chat'] }), renderSlot('plugins.center', {})] }), centerPage === 'work' && (0, jsx_runtime_1.jsx)(WorkCenter_1.WorkCenter, { close: closeCenterPage, renderTasks: () => renderSlot('work.center.tasks', { openSession: openWorkSession }), renderAutomations: () => renderSlot('work.center.automations', { openSession: openWorkSession }), renderExecutions: () => renderSlot('work.center.executions', { openSession: openWorkSession }) })] }) }), workspaceDrawer && (0, jsx_runtime_1.jsx)("button", { type: "button", className: AppFrame_styles_1.default.workspaceScrim, "aria-label": "\u5173\u95ED\u5DE5\u4F5C\u533A", onClick: () => updateSpace(value => ({ ...value, collapsed: true })) }), (0, jsx_runtime_1.jsxs)(DetailsColumn, { children: [browserCloseError?.owner === spaceKey && (0, jsx_runtime_1.jsx)("p", { role: "alert", children: browserCloseError.message }), (0, jsx_runtime_1.jsx)(workspace_pane_1.XhWorkspacePane, { space: space, spaces: spaces, open: workspaceOpen, sessionId: spaceKey === '__global__' ? null : spaceKey, renderSlot: renderSlot, onSelect: id => updateSpace(value => ({ ...value, activeId: id })), onClose: closeWorkspace, onUpdate: updateItem, onUpdateOwner: (owner, id, patch) => setSpaces(all => {
+                                    const prior = all[owner];
+                                    if (!prior?.items.some(item => item.id === id))
+                                        return all;
+                                    return { ...all, [owner]: { ...prior, items: prior.items.map(item => item.id === id ? { ...item, ...patch } : item) } };
+                                }), onNewBrowser: () => openWorkspace('browser', true) })] })] }), (0, jsx_runtime_1.jsx)("div", { className: AppFrame_styles_1.default.overlayLayer, "data-shell-overlay": true, children: renderSlot('shell.overlay', {}) }), !sidebarCollapsed && !sidebarDrawer && (0, jsx_runtime_1.jsx)(DragHandle, { side: "sidebar", left: cols.sidebar, onStart: onSidebarStart, onDrag: onSidebarDrag, onEnd: onDragEnd }), workspaceDockWidth > 0 && (0, jsx_runtime_1.jsx)(DragHandle, { side: "details", left: viewport - workspaceDockWidth, onStart: onWorkspaceStart, onDrag: onWorkspaceDrag, onEnd: onDragEnd })] }));
 }
 
 },
@@ -567,7 +557,7 @@ exports.default = styles;
 // source: src/modules/layout/AppFrame.css
 
 Object.defineProperty(exports, '__esModule', { value: true });
-exports.default = "._84hhiq_frame{background:var(--dsw-alias-bg-base);height:100%;transition:grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);grid-template-rows:100%;display:grid;position:relative;overflow:hidden}._84hhiq_frame[data-dragging]{transition:none}@media (prefers-reduced-motion:reduce){._84hhiq_frame{transition:none}}._84hhiq_sidebarCol{background:var(--dsw-specific-sidebar-fill);border-right:1px solid var(--dsw-alias-border-l1);min-width:0;overflow:hidden}._84hhiq_centerCol{isolation:isolate;z-index:0;flex-direction:column;min-width:0;display:flex;overflow:hidden}._84hhiq_detailsCol{isolation:isolate;z-index:0;border-left:1px solid var(--dsw-alias-border-l2);min-width:0;overflow:hidden}._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol{border-left:none}._84hhiq_handle{cursor:col-resize;z-index:2;touch-action:none;width:8px;transition:left var(--ds-transition-duration-slow) var(--ds-ease-in-out);margin-left:-4px;position:absolute;top:0;bottom:0}._84hhiq_frame[data-dragging] ._84hhiq_handle{transition:none}@media (prefers-reduced-motion:reduce){._84hhiq_handle{transition:none}}._84hhiq_handle[data-side=details]:after{content:\"\";box-sizing:border-box;background:var(--dsw-alias-button-floating-fill);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);opacity:0;width:12px;height:32px;transition:opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out), background var(--ds-transition-duration-slow) var(--ds-ease-in-out);border-radius:10px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}._84hhiq_detailsCol:hover~._84hhiq_handle[data-side=details]:after,._84hhiq_handle[data-side=details]:hover:after,._84hhiq_handle[data-side=details][data-dragging=true]:after{opacity:1}._84hhiq_handle[data-side=details]:hover:after,._84hhiq_handle[data-side=details][data-dragging=true]:after{background:var(--dsw-alias-button-floating-hover);border-color:var(--dsw-alias-border-l3)}._84hhiq_overlayLayer{z-index:20;pointer-events:none;position:absolute;inset:0}._84hhiq_overlayLayer>*{pointer-events:auto}._84hhiq_frame:not([data-xhworkspace-open]){transition:none}._84hhiq_handle[data-side=details]{cursor:w-resize}.xhworkspace{height:100%;min-width:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.xhworkspace[hidden]{display:none}.xhworkspace-tabs{display:flex;align-items:center;flex:none;min-height:40px;gap:2px;padding:4px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-x:auto;scrollbar-width:thin}.xhworkspace-tab{display:flex;align-items:center;flex:none;max-width:180px;min-width:90px;height:35px;border-radius:7px 7px 0 0;color:var(--dsw-alias-label-tertiary);position:relative}.xhworkspace-tab[data-active]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}.xhworkspace-tab+.xhworkspace-tab:after{content:\"\";position:absolute;left:-1.5px;top:10px;bottom:10px;width:1px;background:var(--dsw-alias-border-l2)}.xhworkspace-tab+.xhworkspace-tab[data-active]:after,.xhworkspace-tab[data-active]+.xhworkspace-tab:after{display:none}.xhworkspace-tab>button[role=tab]{display:flex;align-items:center;gap:6px;min-width:0;flex:1;padding:0 8px;border:0;background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer}.xhworkspace-kind{flex:none}.xhworkspace-kind svg{display:block}.xhworkspace-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.xhworkspace-tab-close,.xhworkspace-new{flex:none;width:25px;height:25px;border:0;border-radius:5px;background:none;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer}.xhworkspace-tab-close:hover,.xhworkspace-new:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.xhworkspace-body{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;overflow:hidden}.xhworkspace-item{flex:1;min-height:0;min-width:0;overflow:hidden}.xhworkspace-item[hidden]{display:none}.xhworkspace-tool>div>div:first-child{display:none}._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{position:absolute;right:0;top:0;bottom:0;width:min(560px,calc(100% - 44px));z-index:10;box-shadow:-14px 0 40px #0004}._84hhiq_workspaceScrim{position:absolute;inset:0;z-index:9;border:0;background:#0008}\n._84hhiq_sidebarCol{grid-column:1;grid-row:1}._84hhiq_centerCol{grid-column:2;grid-row:1}._84hhiq_detailsCol{grid-column:3;grid-row:1}._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol{position:absolute;left:0;top:0;bottom:0;z-index:30;box-shadow:12px 0 32px #0003;max-width:calc(100% - 24px)}.xh-sidebar-scrim{position:absolute;inset:0;z-index:29;border:0;padding:0;background:#0005}\n/* Absolute drawers use the frame, not the reserved 56px / zero-width grid\n   track, as their containing block. Docked occupants keep explicit tracks. */\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol,._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{grid-area:auto}\n\n/* Single resident conversation plus optional feature center. */\n.xhfeature-shell{display:flex;flex:1;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}\n.xhfeature-shell>.xhwork-conversation{flex:1;min-width:0;min-height:0;width:100%}\n.xhfeature-shell>.xhwork-conversation[hidden]{display:none}\n\n.xhfeature-shell{flex-direction:column}.xhassistant-seat[hidden]{display:none}.xhassistant-seat{flex:none;min-width:0}\n/* Each column owns an inset surface. Keep the tracks and their resize handles\n   unchanged; the gutters and rounded clipping live inside those tracks. */\n._84hhiq_frame{--xh-region-inset:8px;background:var(--dsw-specific-sidebar-fill)}\n._84hhiq_sidebarCol,._84hhiq_centerCol,._84hhiq_detailsCol{box-sizing:border-box;min-height:0}\n._84hhiq_sidebarCol,._84hhiq_detailsCol{display:flex;flex-direction:column;background:transparent;border:0}\n._84hhiq_sidebarCol{padding:var(--xh-region-inset) 0 var(--xh-region-inset) var(--xh-region-inset)}\n._84hhiq_centerCol{padding:var(--xh-region-inset)}\n._84hhiq_detailsCol{padding:var(--xh-region-inset) var(--xh-region-inset) var(--xh-region-inset) 0}\n._84hhiq_regionSurface{box-sizing:border-box;flex:1;display:flex;flex-direction:column;width:100%;min-width:0;min-height:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-base)}\n._84hhiq_sidebarCol>._84hhiq_regionSurface{background:var(--dsw-specific-sidebar-fill)}\n._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol{padding:0}\n._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol>._84hhiq_regionSurface{border:0;border-radius:0}\n._84hhiq_frame[data-sidebar-collapsed] ._84hhiq_sidebarCol{padding:var(--xh-region-inset) 0}\n._84hhiq_frame[data-sidebar-collapsed] ._84hhiq_sidebarCol>._84hhiq_regionSurface{border:0;border-radius:0;background:transparent}\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol,._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{padding:var(--xh-region-inset);box-shadow:none}\n/* Narrow viewports have no room for a gutter around a floating card: the\n   surface fills its track and the content edge is the screen edge. Keyed to the\n   same 600px breakpoint AppFrame.tsx uses for --xh-region-inset so the inset and\n   the chrome can never disagree. */\n@media (max-width:600px){\n  ._84hhiq_sidebarCol>._84hhiq_regionSurface,._84hhiq_centerCol>._84hhiq_regionSurface,._84hhiq_detailsCol>._84hhiq_regionSurface{border:0;border-radius:0}\n}\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol>._84hhiq_regionSurface{box-shadow:12px 0 32px #0003}\n._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol>._84hhiq_regionSurface{box-shadow:-14px 0 40px #0004}\n";
+exports.default = "._84hhiq_frame{background:var(--dsw-alias-bg-base);height:100%;transition:grid-template-columns var(--ds-transition-duration-slow) var(--ds-ease-in-out);grid-template-rows:100%;display:grid;position:relative;overflow:hidden}._84hhiq_frame[data-dragging]{transition:none}@media (prefers-reduced-motion:reduce){._84hhiq_frame{transition:none}}._84hhiq_sidebarCol{background:var(--dsw-specific-sidebar-fill);border-right:1px solid var(--dsw-alias-border-l1);min-width:0;overflow:hidden}._84hhiq_centerCol{isolation:isolate;z-index:0;flex-direction:column;min-width:0;display:flex;overflow:hidden}._84hhiq_detailsCol{isolation:isolate;z-index:0;border-left:1px solid var(--dsw-alias-border-l2);min-width:0;overflow:hidden}._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol{border-left:none}._84hhiq_handle{cursor:col-resize;z-index:2;touch-action:none;width:8px;transition:left var(--ds-transition-duration-slow) var(--ds-ease-in-out);margin-left:-4px;position:absolute;top:0;bottom:0}._84hhiq_frame[data-dragging] ._84hhiq_handle{transition:none}@media (prefers-reduced-motion:reduce){._84hhiq_handle{transition:none}}._84hhiq_handle[data-side=details]:after{content:\"\";box-sizing:border-box;background:var(--dsw-alias-button-floating-fill);border:1px solid var(--dsw-alias-border-l2-darkmode-thin);opacity:0;width:12px;height:32px;transition:opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out), background var(--ds-transition-duration-slow) var(--ds-ease-in-out);border-radius:10px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}._84hhiq_detailsCol:hover~._84hhiq_handle[data-side=details]:after,._84hhiq_handle[data-side=details]:hover:after,._84hhiq_handle[data-side=details][data-dragging=true]:after{opacity:1}._84hhiq_handle[data-side=details]:hover:after,._84hhiq_handle[data-side=details][data-dragging=true]:after{background:var(--dsw-alias-button-floating-hover);border-color:var(--dsw-alias-border-l3)}._84hhiq_overlayLayer{z-index:20;pointer-events:none;position:absolute;inset:0}._84hhiq_overlayLayer>*{pointer-events:auto}._84hhiq_frame:not([data-xhworkspace-open]){transition:none}._84hhiq_handle[data-side=details]{cursor:w-resize}.xhworkspace{height:100%;min-width:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base)}.xhworkspace[hidden]{display:none}.xhworkspace-tabs{display:flex;align-items:center;flex:none;min-height:40px;gap:2px;padding:4px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-x:auto;scrollbar-width:thin}.xhworkspace-tab{display:flex;align-items:center;flex:none;max-width:180px;min-width:90px;height:35px;border-radius:7px 7px 0 0;color:var(--dsw-alias-label-tertiary);position:relative}.xhworkspace-tab[data-active]{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}.xhworkspace-tab+.xhworkspace-tab:after{content:\"\";position:absolute;left:-1.5px;top:10px;bottom:10px;width:1px;background:var(--dsw-alias-border-l2)}.xhworkspace-tab+.xhworkspace-tab[data-active]:after,.xhworkspace-tab[data-active]+.xhworkspace-tab:after{display:none}.xhworkspace-tab>button[role=tab]{display:flex;align-items:center;gap:6px;min-width:0;flex:1;padding:0 8px;border:0;background:none;color:inherit;font:inherit;font-size:12px;cursor:pointer}.xhworkspace-kind{flex:none}.xhworkspace-kind svg{display:block}.xhworkspace-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.xhworkspace-tab-close,.xhworkspace-new{flex:none;width:25px;height:25px;border:0;border-radius:5px;background:none;color:var(--dsw-alias-label-tertiary);font:inherit;cursor:pointer}.xhworkspace-tab-close:hover,.xhworkspace-new:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.xhworkspace-body{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;overflow:hidden}.xhworkspace-item{flex:1;min-height:0;min-width:0;overflow:hidden}.xhworkspace-item[hidden]{display:none}.xhworkspace-tool>div>div:first-child{display:none}._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{position:absolute;right:0;top:0;bottom:0;width:min(560px,calc(100% - 44px));z-index:10;box-shadow:-14px 0 40px #0004}._84hhiq_workspaceScrim{position:absolute;inset:0;z-index:9;border:0;background:#0008}\n._84hhiq_sidebarCol{grid-column:1;grid-row:1}._84hhiq_centerCol{grid-column:2;grid-row:1}._84hhiq_detailsCol{grid-column:3;grid-row:1}._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol{position:absolute;left:0;top:0;bottom:0;z-index:30;box-shadow:12px 0 32px #0003;max-width:calc(100% - 24px)}.xh-sidebar-scrim{position:absolute;inset:0;z-index:29;border:0;padding:0;background:#0005}\n/* Absolute drawers use the frame, not the reserved 56px / zero-width grid\n   track, as their containing block. Docked occupants keep explicit tracks. */\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol,._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{grid-area:auto}\n\n/* Single resident conversation plus optional feature center. */\n.xhfeature-shell{display:flex;flex:1;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden}\n.xhfeature-shell>.xhwork-conversation{flex:1;min-width:0;min-height:0;width:100%}\n.xhfeature-shell>.xhwork-conversation[hidden]{display:none}\n\n.xhfeature-shell{flex-direction:column}\n/* Each column owns an inset surface. Keep the tracks and their resize handles\n   unchanged; the gutters and rounded clipping live inside those tracks. */\n._84hhiq_frame{--xh-region-inset:8px;background:var(--dsw-specific-sidebar-fill)}\n._84hhiq_sidebarCol,._84hhiq_centerCol,._84hhiq_detailsCol{box-sizing:border-box;min-height:0}\n._84hhiq_sidebarCol,._84hhiq_detailsCol{display:flex;flex-direction:column;background:transparent;border:0}\n._84hhiq_sidebarCol{padding:var(--xh-region-inset) 0 var(--xh-region-inset) var(--xh-region-inset)}\n._84hhiq_centerCol{padding:var(--xh-region-inset)}\n._84hhiq_detailsCol{padding:var(--xh-region-inset) var(--xh-region-inset) var(--xh-region-inset) 0}\n._84hhiq_regionSurface{box-sizing:border-box;flex:1;display:flex;flex-direction:column;width:100%;min-width:0;min-height:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l2);border-radius:16px;background:var(--dsw-alias-bg-base)}\n._84hhiq_sidebarCol>._84hhiq_regionSurface{background:var(--dsw-specific-sidebar-fill)}\n._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol{padding:0}\n._84hhiq_frame[data-details-collapsed] ._84hhiq_detailsCol>._84hhiq_regionSurface{border:0;border-radius:0}\n._84hhiq_frame[data-sidebar-collapsed] ._84hhiq_sidebarCol{padding:var(--xh-region-inset) 0}\n._84hhiq_frame[data-sidebar-collapsed] ._84hhiq_sidebarCol>._84hhiq_regionSurface{border:0;border-radius:0;background:transparent}\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol,._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol{padding:var(--xh-region-inset);box-shadow:none}\n/* Narrow viewports have no room for a gutter around a floating card: the\n   surface fills its track and the content edge is the screen edge. Keyed to the\n   same 600px breakpoint AppFrame.tsx uses for --xh-region-inset so the inset and\n   the chrome can never disagree. */\n@media (max-width:600px){\n  ._84hhiq_sidebarCol>._84hhiq_regionSurface,._84hhiq_centerCol>._84hhiq_regionSurface,._84hhiq_detailsCol>._84hhiq_regionSurface{border:0;border-radius:0}\n}\n._84hhiq_frame[data-sidebar-drawer] ._84hhiq_sidebarCol>._84hhiq_regionSurface{box-shadow:12px 0 32px #0003}\n._84hhiq_frame[data-xhworkspace-drawer] ._84hhiq_detailsCol>._84hhiq_regionSurface{box-shadow:-14px 0 40px #0004}\nbody[data-ds-dark-theme] ._84hhiq_frame{background:var(--dsw-specific-frame-bg,var(--dsw-specific-sidebar-fill))}\nbody[data-ds-dark-theme] ._84hhiq_sidebarCol{background:transparent;border-right-color:transparent}\nbody[data-ds-dark-theme] ._84hhiq_frame:not([data-sidebar-collapsed]) ._84hhiq_sidebarCol>._84hhiq_regionSurface{background:color-mix(in srgb,var(--dsw-alias-bg-base) 68%,transparent);backdrop-filter:blur(24px) saturate(1.25);-webkit-backdrop-filter:blur(24px) saturate(1.25);box-shadow:0 12px 40px #00000059,inset 0 1px 0 #ffffff0a}\n";
 
 },
 "src/modules/views-types.js": function(module, exports, require) {
@@ -985,107 +975,43 @@ function workspaceDockVisibility(event) {
 
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.modelBrowserOpen = modelBrowserOpen;
-exports.modelBrowserClose = modelBrowserClose;
-exports.listenModelBrowser = listenModelBrowser;
+exports.ownedBrowserPage = ownedBrowserPage;
+exports.listenOwnedBrowser = listenOwnedBrowser;
 const runtime_types_1 = require("../shared/runtime-types");
-function modelBrowserOpen(raw) {
+function ownedBrowserPage(raw, backend) {
     const value = (0, runtime_types_1.objectValue)(raw);
-    if (typeof value.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)
-        || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128 || typeof value.url !== 'string' || value.url.length > 4096)
+    if (typeof value.owner !== 'string' || !value.owner || value.owner.length > 128 || typeof value.tabId !== 'string' || !(backend === "browser" ? /^headless:[0-9a-f]{32}$/ : /^browser:[A-Za-z0-9_-]{1,56}$/).test(value.tabId) || typeof value.closed !== 'boolean')
+        return;
+    if (value.closed)
+        return { owner: value.owner, tabId: value.tabId, backend, closed: true };
+    if (typeof value.url !== 'string' || value.url.length > 4096)
         return;
     try {
         const url = new URL(value.url);
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
             return;
-        return { requestId: value.requestId, owner: value.owner, url: url.href };
+        return { owner: value.owner, tabId: value.tabId, backend, closed: false, url: url.href };
     }
     catch {
         return;
     }
 }
-function modelBrowserClose(raw) {
-    const value = (0, runtime_types_1.objectValue)(raw);
-    if (typeof value.requestId !== 'string' || !/^[0-9a-f]{32}$/.test(value.requestId)
-        || typeof value.owner !== 'string' || !value.owner || value.owner.length > 128
-        || typeof value.tabId !== 'string' || !/^[A-Za-z0-9:_-]{1,64}$/.test(value.tabId))
-        return;
-    return { requestId: value.requestId, owner: value.owner, tabId: value.tabId };
-}
-/** Always mounted at AppFrame, even when settings or another center occludes
- * the browser. Events never change the selected chat or borrow its identity. */
-function listenModelBrowser(native, ui) {
+function listenOwnedBrowser(native, accept) {
     let disposed = false;
-    const unlisten = [];
-    const requests = new Set();
-    const recent = [];
-    const remember = (id) => { if (!recent.includes(id)) {
-        recent.push(id);
-        if (recent.length > 128)
-            recent.shift();
-    } };
-    const bind = (event, handle) => {
-        void native.event.listen(event, event => { if (!disposed)
-            handle(event.payload); }).then(stop => {
-            if (disposed)
-                stop();
-            else
-                unlisten.push(stop);
-        }).catch(() => { });
-    };
-    bind('xharness-browser-control-open', raw => {
-        const request = modelBrowserOpen(raw);
-        if (!request)
-            return;
-        if (recent.includes(request.requestId))
-            return;
-        remember(request.requestId);
-        if (ui.currentOwner() !== request.owner || !ui.ready()) {
-            void native.core.invoke('desktop_browser_control_reply', { requestId: request.requestId, reply: { status: 'failed' } }).catch(() => { });
-            return;
-        }
-        requests.add(request.requestId);
-        ui.open(request);
-    });
-    bind('xharness-browser-control-close', raw => {
-        const request = modelBrowserClose(raw);
-        if (!request || recent.includes(request.requestId))
-            return;
-        remember(request.requestId);
-        const reply = (closed) => native.core.invoke('desktop_browser_control_reply', {
-            requestId: request.requestId, reply: closed ? { status: 'closed', tab_id: request.tabId } : { status: 'failed' },
-        }).catch(() => { });
-        if (ui.currentOwner() !== request.owner || !ui.ready()) {
-            void reply(false);
-            return;
-        }
-        void ui.close(request).then(reply, () => reply(false));
-    });
-    bind('xharness-browser-control-cancel', raw => {
-        if (typeof raw !== 'string' || !/^[0-9a-f]{32}$/.test(raw))
-            return;
-        remember(raw);
-        if (!requests.delete(raw))
-            return;
-        ui.cancel(raw);
-    });
-    // Ready tabs no longer need a cancellation tombstone. Native controls ignore
-    // late replies; marking completion is local-only and contains no page data.
-    const settled = (event) => {
-        if (event instanceof CustomEvent && typeof event.detail === 'string')
-            requests.delete(event.detail);
-    };
-    window.addEventListener('xharness:browser-control-settled', settled);
-    return () => {
-        disposed = true;
-        unlisten.forEach(stop => stop());
-        window.removeEventListener('xharness:browser-control-settled', settled);
-        for (const requestId of requests) {
-            ui.cancel(requestId);
-            void native.core.invoke('desktop_browser_control_reply', { requestId, reply: { status: 'failed' } }).catch(() => { });
-        }
-        requests.clear();
-    };
+    const stops = [];
+    const subscriptions = [["xharness-browser-owned-page", "webview"], ["xharness-headless-page", "browser"]];
+    for (const [event, backend] of subscriptions) {
+        void native.event.listen(event, ev => { if (disposed)
+            return; const page = ownedBrowserPage(ev.payload, backend); if (page)
+            accept(page); })
+            .then(unlisten => { if (disposed)
+            unlisten();
+        else
+            stops.push(unlisten); })
+            .catch(() => { if (!disposed)
+            console.error("Browser presentation subscription failed"); });
+    }
+    return () => { disposed = true; stops.forEach(stop => stop()); };
 }
 
 },
@@ -1282,7 +1208,7 @@ exports.ThemePresenter = ThemePresenter;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ShellNavigation = exports.SHELL_HISTORY_LIMIT = void 0;
 const shell_route_1 = require("../shared/shell-route");
-const pages = ['plugins', 'work', 'assistant', 'swarm'];
+const pages = ['plugins', 'work', 'swarm'];
 const sameRoute = (a, b) => a.page === b.page && a.sessionId === b.sessionId;
 exports.SHELL_HISTORY_LIMIT = 128;
 /** One history owner for session selection and center-page transitions. History
@@ -1336,7 +1262,6 @@ class ShellNavigation {
         target.addEventListener('xharness:review:open', this.close);
         const project = () => { this.present(this.snapshot.route.page); };
         target.addEventListener(shell_route_1.SHELL_ROUTE_REQUESTED, project);
-        target.addEventListener('xharness:assistant:close', this.close);
         target.addEventListener('xharness:swarm:close', this.close);
         const off = this.sessions.list.subscribe(this.schedule);
         this.flush();
@@ -1347,7 +1272,6 @@ class ShellNavigation {
                 remove();
             target.removeEventListener('xharness:review:open', this.close);
             target.removeEventListener(shell_route_1.SHELL_ROUTE_REQUESTED, project);
-            target.removeEventListener('xharness:assistant:close', this.close);
             target.removeEventListener('xharness:swarm:close', this.close);
             this.target = undefined;
             this.generation++;
@@ -1470,8 +1394,7 @@ class ShellNavigation {
             listener();
     }
     present(page) {
-        // Presentation projection is intentionally not an ':open' intent event:
-        // Assistant's handler selects a session and may stage references.
+        // Replay only presentation; never repeat a feature's original navigation intent.
         this.target?.dispatchEvent(new CustomEvent(shell_route_1.SHELL_ROUTE_CHANGED, { detail: { page } }));
     }
 }

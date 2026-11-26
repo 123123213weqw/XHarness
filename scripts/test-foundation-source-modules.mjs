@@ -68,13 +68,13 @@ function sourceModule(name, globals = {}, externals = {}, entry = 'index') {
 
 const jsx = { jsx: (type, props) => ({type, props}), jsxs: (type, props) => ({type, props}), Fragment: 'fragment' }
 const zod = require('zod')
-const primitives = {Modal: 'Modal', Button: 'Button', IconDownloadOutline16: 'download', IconChevronDownOutline14: 'chevron', Menu: 'Menu'}
+const primitives = {Modal: 'Modal', Button: 'Button', IconDownloadOutline16: 'download', IconBrowseOutline16: 'browse', IconListPenOutline16: 'pen', IconQuestionOutline14: 'help', IconChevronDownOutline14: 'chevron', Menu: 'Menu'}
 function snapshot(initial) {
   let state = structuredClone(initial); const listeners = new Set()
   return {getSnapshot: () => state, subscribe: fn => {listeners.add(fn); return () => listeners.delete(fn)}, update: edit => {state = {...state}; edit(state); for (const fn of listeners) fn()}}
 }
 const runtime = {createSnapshotStore: snapshot, defineStore: definition => definition}
-const viewExternals = {'@xharness/dsh-client-runtime/client': runtime, 'react/jsx-runtime': jsx, 'react': {useState: initial => [initial, () => {}]}, '@xharness/dsh-client-ui-primitives': primitives}
+const viewExternals = {'@xharness/dsh-client-runtime/client': runtime, 'react/jsx-runtime': jsx, 'react': {useState: initial => [initial, () => {}], useId: () => 'menu-id', useRef: current => ({current}), useCallback: callback => callback, useEffect: () => {}}, '@xharness/dsh-client-ui-primitives': primitives}
 const current = sourceModule('client-modules')
 const old = legacy('client-modules')
 const row = (id, external = []) => ({ id, url: `/${id}.js`, rev: id, external })
@@ -140,22 +140,30 @@ for (const [label, api] of [['legacy', old], ['source', current]]) {
   })
 }
 
-test('source: strict HMR SSE boundary and serialized lifecycle preserve old behavior', async () => {
+test('source: strict HMR SSE boundary and serialized lifecycle preserve old behavior', {timeout:30_000}, async () => {
   const trace = []; let receive; let closed = false; let dispose
+  const registered = Promise.withResolvers()
+  const settled = Promise.withResolvers()
+  let passes = 0
+  const onReload = async () => {
+    trace.push('new.await')
+    if (++passes === 2) settled.resolve()
+  }
   const oldDocument = globalThis.document; const oldEventSource = globalThis.EventSource
   globalThis.document = {querySelectorAll: () => [{getAttribute: () => 'a', remove: () => trace.push('style')}]}
-  globalThis.EventSource = class { constructor(url) { trace.push(url) } addEventListener(_event, listener) { receive = listener } close() { closed = true } }
+  globalThis.EventSource = class { constructor(url) { trace.push(url) } addEventListener(_event, listener) { receive = listener; registered.resolve() } close() { closed = true } }
   try {
-    const hmr = sourceModule('client-hmr')
-    const entry = {options: {name: 'a'}, ctx: {registry: {delete: () => trace.push('registry')}}, fiber: {runtime: {callback: 'runtime'}, inertia: undefined, await: async () => trace.push('new.await')}, refresh: async () => { trace.push('refresh'); entry.fiber = {runtime: null, await: async () => trace.push('new.await')} }}
+    const hmr = sourceModule('client-hmr', { setTimeout, clearTimeout, fetch: async (url, options) => { assert.equal(url, '/plugins/events'); assert.equal(options.method, 'HEAD'); assert.equal(options.credentials, 'same-origin'); return {ok:true,headers:{get:()=> 'text/event-stream; charset=utf-8'}} } })
+    const entry = {options: {name: 'a'}, ctx: {registry: {delete: () => trace.push('registry')}}, fiber: {runtime: {callback: 'runtime'}, inertia: undefined, await: onReload}, refresh: async () => { trace.push('refresh'); entry.fiber = {runtime: null, await: onReload} }}
     hmr.apply({modules: {invalidate: id => trace.push(`invalidate:${id}`), prefetch: async id => { trace.push(`prefetch:${id}`); await new Promise(r => setTimeout(r,2)) }}, loader: {entries: () => [entry]}, logger: {warn: message => trace.push(message), error: message => trace.push(String(message))}, effect: effect => {dispose = effect()} })
+    await registered.promise
     receive({data: JSON.stringify({type: 'rebuilt', id: 'a', rev: 'r'})}); receive({data: JSON.stringify({type: 'rebuilt', id: 'a', rev: 's'})})
-    await new Promise(r => setTimeout(r, 30))
+    await settled.promise
     assert.deepEqual(trace.slice(1), ['invalidate:a', 'prefetch:a', 'registry', 'style', 'refresh', 'new.await', 'invalidate:a', 'prefetch:a', 'style', 'refresh', 'new.await'])
     receive({data: 'not-json'}); receive({data: JSON.stringify(null)}); receive({data: JSON.stringify({type:'rebuilt',id:3})})
     assert.match(trace.at(-3), /unparseable/); assert.match(trace.at(-2), /invalid/); assert.match(trace.at(-1), /invalid/)
-    dispose(); assert.equal(closed, true)
-  } finally {globalThis.document = oldDocument; globalThis.EventSource = oldEventSource}
+    dispose(); dispose = undefined; assert.equal(closed, true)
+  } finally {dispose?.(); globalThis.document = oldDocument; globalThis.EventSource = oldEventSource}
 })
 
 function gatewayContext() {
@@ -231,7 +239,16 @@ for (const label of ['legacy', 'source']) {
     state.listener('s','export',{kind:'success'}); await new Promise(r=>setTimeout(r,1))
     const result=state.controller.store.getSnapshot().bySession.s; assert.equal(result.status,'error'); assert.match(result.error,/HTTP 403 denied/)
     const props={sessionId:'s',useSessionLogDownload:select=>select(state.controller.store.getSnapshot()),t:key=>key,request:()=>{},dismiss:()=>{}}
-    const tree=state.seat.component(props); assert.equal(tree.props.children[0].props.disabled,false)
+    const tree=state.seat.component(props)
+    if (label==='legacy') assert.equal(tree.props.children[0].props.disabled,false)
+    else {
+      const [menuSeat,dialog]=tree.type(tree.props).props.children
+      assert.equal(menuSeat.props.children.props.anchor.props['aria-haspopup'],'menu')
+      const resultModal=dialog.type(dialog.props)
+      assert.equal(resultModal.props.open,true,'the help menu still mounts the slash-command result modal')
+      assert.equal(resultModal.props.title,'dialog.errorTitle')
+      assert.match(resultModal.props.description,/HTTP 403 denied/)
+    }
     await state.controller.dispose()
   })
 }
@@ -1086,4 +1103,44 @@ for(const label of ['legacy','source'])test(`${label}: real Core runner boot con
   await drain();const runner=ctx.get('dynamicCordisRunner');assert.ok(runner)
   assert.equal(ctx.get('modules'),system);assert.ok(syncs.length>0);assert.equal(syncs[0].length,5);assert.equal(events.size,5);assert.equal(invalidated.length,0)
   await ctx.fiber.dispose();assert.equal(events.size,0)
+})
+
+
+test('source: optional HMR rejects SPA HTML, missing endpoints and failed probes without opening EventSource', async () => {
+  for (const response of [{ok:true,type:'text/html'}, {ok:false,type:'text/event-stream'}, {ok:true,type:null}, 'network-error']) {
+    let opened = 0, dispose; const warnings = []
+    const hmr = sourceModule('client-hmr', { setTimeout, clearTimeout,
+      EventSource: class { constructor() { opened++ } },
+      fetch: async () => { if (response === 'network-error') throw Error('offline'); return {ok:response.ok,headers:{get:()=>response.type}} },
+    })
+    hmr.apply({modules:{},loader:{},logger:{warn:message=>warnings.push(message),error:()=>assert.fail('not a task failure')},effect:effect=>{dispose=effect()}})
+    await new Promise(resolve => setTimeout(resolve, 0)); dispose()
+    assert.equal(opened, 0); assert.equal(warnings.length, response === 'network-error' ? 1 : 0)
+  }
+})
+
+test('source: disposed HMR cannot install a stream after a late capability response', async () => {
+  let resolveProbe, dispose, signal, opened = 0
+  const hmr = sourceModule('client-hmr', { setTimeout, clearTimeout,
+    EventSource: class { constructor() { opened++ } },
+    fetch: (_url, options) => { signal = options.signal; return new Promise(resolve => { resolveProbe = resolve }) },
+  })
+  hmr.apply({modules:{},loader:{},logger:{warn:()=>assert.fail('disposed probe must stay quiet'),error:()=>assert.fail()},effect:effect=>{dispose=effect()}})
+  dispose(); assert.equal(signal.aborted, true)
+  resolveProbe({ok:true,headers:{get:()=> 'text/event-stream'}})
+  await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(opened, 0)
+})
+
+test('source: HMR capability probe aborts at its own deadline without opening a stream', async () => {
+  let dispose, signal, opened = 0; const warnings = []
+  const hmr = sourceModule('client-hmr', {
+    setTimeout: callback => { queueMicrotask(callback); return 1 }, clearTimeout() {},
+    EventSource: class { constructor() { opened++ } },
+    fetch: (_url, options) => new Promise((_resolve, reject) => {
+      signal = options.signal; signal.addEventListener('abort', () => reject(Error('probe deadline')), {once:true})
+    }),
+  })
+  hmr.apply({modules:{},loader:{},logger:{warn:message=>warnings.push(message),error:()=>assert.fail()},effect:effect=>{dispose=effect()}})
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(signal.aborted,true); assert.equal(opened,0); assert.equal(warnings.length,1); dispose()
 })

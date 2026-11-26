@@ -4,7 +4,7 @@
 > `github/review-*` requests return an explicit retired error before credentials,
 > model, session or review-storage access. The desktop Host no longer configures
 > the review directory. Existing review receipts, caches and normal chats are not
-> deleted or migrated. GitHub PR reviews/CI, normal chat, Little X, subagents and
+> deleted or migrated. GitHub PR reviews/CI, normal chat, subagents and
 > the shared diff viewer are unchanged.
 >
 > The remainder is a **historical implementation reference**, not instructions
@@ -316,59 +316,10 @@ This fixture uses the configured DeepSeek key/model through Chat Completions
 with thinking off; it is not a claim of exact installed Anthropic-route parity.
 Real results/usage must be recorded separately from controlled passing tests.
 
-## Global assistant instead of PR chat binding
+## Historical PR/chat integrations
 
-A fixed top-level X entry (Little X / 小 X) opens one normal durable conversation per Host
-state directory (`xharness-global-assistant-v1`). The user chooses its workspace
-on first use. It reuses the single resident ConversationRoot, input/draft machine,
-model selection, history, tools, queue/steer/cancel and ordinary permissions.
-Code Review never embeds or associates a conversation with a PR. Creating a PR
-no longer records a source-chat receipt. Old conversation histories and legacy
-association files remain untouched; they are not read as active links. Retired
-`github/chat-get` and `github/chat-set` fail closed. New auxiliary review requests
-with the retired `sessionId` argument are rejected before model use; historical
-receipts remain readable.
-
-Ask Little X on a PR, a diff line or a validated finding stages a bounded,
-commit-pinned reference. Add to draft is explicit, preserves text and attachments,
-and never submits. PR descriptions and whole diffs are not automatically injected.
-Task overview reads currently listed Host summaries, not message bodies. Its
-bounded snapshot may be explicitly shared into the assistant draft; running,
-waiting, idle and turn-finished are distinct, not claims of successful completion.
-Opening a task returns to its existing conversation; child routing requires the
-existing resolved address. Creating a session after the user leaves this page
-must not steal their selection. Missing/ambiguous creation responses reconcile
-Host metadata and retry the same id, not create another conversation.
-
-This is a unified assistant surface, not a new privileged supervisor. The ordinary
-agent tool retains its existing direct-child scope. Arbitrary global chat control,
-cloud execution, automatic GitHub writes/merges or background PR polling-to-fix
-are not introduced here. Structured read-only PR review remains an independent,
-explicitly requested job.
-
-Controlled tests: `scripts/test-global-assistant.mjs` uses the production service
-and original input state machine. `scripts/test-global-assistant-browser.mjs`
-mounts compiled Layout/CodeReview/Assistant and original normal conversation,
-reasoning, tool tree and model controls on Chromium/WebKit with controlled Host
-ports. These are not claims of real model or installed desktop acceptance.
-
-### Global assistant acceptance (2026-10-04)
-
-- Strict TypeScript, repository-only build and generated-asset freshness passed.
-- 76 frontend unit/contract cases passed. Compiled assistant/full conversation,
-  structured review, cache and repository filters passed on Chromium and WebKit.
-- V100: Host 212 passed / 6 existing ignored; native adapter 66 passed; Clippy
-  all-targets passed. The final retirement test covers both old binding endpoints,
-  malformed requests and rejection before backend/model invocation.
-- Real Web at local port 3271 (UI here, isolated Host forwarded from V100): the
-  assistant was created through the UI and session.list reports exactly one fixed
-  assistant id. Its original composer/model/effort controls and real task summaries
-  loaded without changing the old task waiting for approval. No model prompt,
-  GitHub mutation or automatic merge was submitted by this acceptance.
-- Desktop package and the running isolated Host were not restarted. UI retirement
-  is visible now; server-side retired-endpoint rejection/source-capture removal
-  requires a later Host replacement. Historic data was not deleted.
-
-Evidence logs are local `/tmp/global-assistant-{final-unit,full-browser,final-browser,
-final-build,rust,retirement-rust}.log`. Controlled browser fixtures are explicitly
-separate from the live-Web check; no installed desktop or cloud execution claim.
+The former Little X entry and PR-to-assistant handoff were removed. Its saved
+conversation remains a normal Host chat in the existing workspace; nothing is
+deleted, migrated, or automatically started. Use a regular chat and explicitly
+include the PR URL when needed. Existing investigation notes above are
+historical evidence, not active UI instructions.

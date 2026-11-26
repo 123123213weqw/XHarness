@@ -14,8 +14,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 use xharness_debug::DebugRecorder;
 use xharness_host::{
-    parse_model_settings, valid_credential_reference, DurableLoopAgentRuntime, ModelRegistry,
-    ModelSettingsBackend,
+    parse_model_settings, retired_account_provider, valid_credential_reference,
+    DurableLoopAgentRuntime, ModelRegistry, ModelSettingsBackend, RETIRED_ACCOUNT_CREDENTIAL,
+    RETIRED_ACCOUNT_MESSAGE,
 };
 
 /// Injectable for deterministic tests. Production never falls back to plaintext.
@@ -356,6 +357,9 @@ impl ModelSettingsBackend for NativeModelSettings {
         self.runtime.replace_model_registry(registry);
     }
     async fn credential_info(&self, reference: &str) -> Result<Value, String> {
+        if reference == RETIRED_ACCOUNT_CREDENTIAL {
+            return Ok(json!({"configured":false,"writable":false}));
+        }
         if self.environment_key(reference).is_some() {
             return Ok(json!({"configured":true,"source":"env","writable":false}));
         }
@@ -369,6 +373,7 @@ impl ModelSettingsBackend for NativeModelSettings {
         reference: &str,
         value: Option<&str>,
     ) -> Result<bool, String> {
+        reject_retired_credential(reference)?;
         if self.environment_key(reference).is_some() {
             return Err("An environment/process credential overrides this reference; change it outside the app".into());
         }
@@ -386,6 +391,7 @@ impl ModelSettingsBackend for NativeModelSettings {
         value: &str,
         section: &Value,
     ) -> Result<ModelRegistry, String> {
+        reject_retired_credential(reference)?;
         if self.environment_key(reference).is_some() {
             return Err("An environment/process credential overrides this reference; change it outside the app".to_owned());
         }
@@ -401,6 +407,7 @@ impl ModelSettingsBackend for NativeModelSettings {
         reference: &str,
         section: &Value,
     ) -> Result<ModelRegistry, String> {
+        reject_retired_credential(reference)?;
         if self.environment_key(reference).is_some() {
             return Err("An environment/process credential is read-only".to_owned());
         }
@@ -411,6 +418,16 @@ impl ModelSettingsBackend for NativeModelSettings {
         Ok(registry)
     }
     async fn discover(&self, section: &Value, request: &Value) -> Result<Value, String> {
+        if request["provider"].as_str().is_some_and(|id| {
+            let credential = section
+                .get("providers")
+                .and_then(|profiles| profiles.get(id))
+                .and_then(|profile| profile.get("apiKeyEnv"))
+                .and_then(Value::as_str);
+            retired_account_provider(id, credential)
+        }) {
+            return Err(RETIRED_ACCOUNT_MESSAGE.to_owned());
+        }
         let doc = parse_model_settings(section)?;
         let profile = request["provider"]
             .as_str()
@@ -524,6 +541,13 @@ impl ModelSettingsBackend for NativeModelSettings {
             .collect::<Vec<_>>();
         Ok(json!({"models":models}))
     }
+}
+
+fn reject_retired_credential(reference: &str) -> Result<(), String> {
+    if reference == RETIRED_ACCOUNT_CREDENTIAL {
+        return Err(RETIRED_ACCOUNT_MESSAGE.to_owned());
+    }
+    Ok(())
 }
 
 fn validate_credential_value(value: &str) -> Result<(), String> {

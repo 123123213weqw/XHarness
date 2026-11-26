@@ -33,19 +33,30 @@ const agentFailureLocales = {
  en: {'chat.agentError':'Background task reported a failure: {message}'},
  zh: {'chat.agentError':'后台任务报告异常：{message}'},
 };
+// The statistics strip became a label/value readout. Every rail string is
+// checked. Keys that left the product dictionary are retired; keys kept only
+// as the name of a rewritten string are rewritten. The frozen reference
+// carries the old sentence under both kinds, so it drops them before parity.
+const statsRailLocales = {
+ en: {'stats.ttft':'TTFT','stats.ttftHint':'Average time to first token','stats.speed':'Speed','stats.speedHint':'Output tokens per second of decode time','stats.tokensPerSecond':'tok/s','stats.cacheHit':'Cache','stats.cacheHitHint':'Share of billed input tokens served from cache','stats.inputTokens':'In','stats.inputTokensHint':'Billed input tokens: uncached, cache read and cache write','stats.outputTokens':'Out','stats.outputTokensHint':'Output tokens','stats.llm':'LLM','stats.llmHint':'Cumulative model request time','stats.toolCall':'Tools','stats.toolCallHint':'Cumulative tool run time','stats.turns':'Turns','stats.turnsHint':'User turns in this conversation','stats.steps':'Steps','stats.stepsHint':'Model steps in this conversation'},
+ zh: {'stats.ttft':'首字','stats.ttftHint':'平均首 token 延迟','stats.speed':'速率','stats.speedHint':'解码阶段每秒输出 token 数','stats.tokensPerSecond':'tok/s','stats.cacheHit':'缓存','stats.cacheHitHint':'计费输入 token 中缓存命中的占比','stats.inputTokens':'输入','stats.inputTokensHint':'计费输入 token：未命中缓存 + 缓存读取 + 缓存写入','stats.outputTokens':'输出','stats.outputTokensHint':'输出 token','stats.llm':'LLM','stats.llmHint':'模型请求累计耗时','stats.toolCall':'工具','stats.toolCallHint':'工具运行累计耗时','stats.turns':'轮次','stats.turnsHint':'本次对话的用户轮次','stats.steps':'步数','stats.stepsHint':'本次对话的模型步数'},
+};
+const retiredStatsKeys = ['stats.counts','stats.ttftAverage','stats.tokens'];
+const frozenStatsKeys = [...retiredStatsKeys, ...Object.keys(statsRailLocales.en)];
+const withoutRetiredStats = locale => Object.fromEntries(Object.entries(json(locale)).filter(([key]) => !frozenStatsKeys.includes(key)));
 const agentFailureStyle = '\n.IxU-fW_openError[data-agent-error]{position:sticky;top:0;z-index:9;flex:none;padding:8px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-interactive-bg-hover-solid)}\n';
 function baselineAgentFailureStyle(source) {
  source=stripTurnStyle(source,'chat',false);
  assert.ok(source.endsWith(agentFailureStyle),'reviewed agent failure notice must remain an exact append-only delta');
  const baseline=source.slice(0,-agentFailureStyle.length);
- assert.equal(createHash('sha256').update(baseline).digest('hex'),'ea56a6c3f52b53edd7d339e8d5c97a9c1a76fe032832c509bef447b84b164647','unrelated ChatView styles must retain their reviewed bytes');
+ assert.equal(createHash('sha256').update(baseline).digest('hex'),'bb932c6acad33381f451b56fd017327ad077f24aaac954a5df8b136e9707a790','unrelated ChatView styles must retain their reviewed bytes');
  return baseline;
 }
 const composerBusyStyle = '\n._7yzX1q_primary [data-composer-busy]{animation:xh-composer-busy 1s linear infinite}\n@keyframes xh-composer-busy{to{transform:rotate(360deg)}}\n@media(prefers-reduced-motion:reduce){._7yzX1q_primary [data-composer-busy]{animation:none}}\n';
 function baselineComposerStyle(source) {
  assert.ok(source.endsWith(composerBusyStyle),'reviewed composer busy animation must remain an exact append-only delta');
  const baseline=source.slice(0,-composerBusyStyle.length);
- assert.equal(createHash('sha256').update(baseline).digest('hex'),'62fa5c5f10a5c38f6d04f8a082a9f9fe470a1d11453dcaec442ce3350519029d','unrelated InputBar styles must retain their reviewed bytes');
+ assert.equal(createHash('sha256').update(baseline).digest('hex'),'69ab58356bf9c4f406b0e36c96b7fe2b6239d92da102990f6245bf9e86008653','unrelated InputBar styles must retain their reviewed bytes');
  return baseline;
 }
 const recoveryLocales = {
@@ -93,6 +104,12 @@ function baselineProductCopy(language, locale) {
   delete normalized[key];
  }
  delete normalized['stats.title'];
+ for(const [key,expected] of Object.entries(statsRailLocales[language])) {
+  if(!frozenStatsKeys.includes(key)) assert.equal(Object.hasOwn(apis[0].plugin[language],key),false,'statistics rail string is additive; keep the frozen baseline unchanged');
+  assert.equal(locale[key],expected,`${language} statistics rail string ${key}`);
+  delete normalized[key];
+ }
+ for(const key of retiredStatsKeys) assert.equal(Object.hasOwn(locale,key),false,'retired statistics sentence must not return: '+key);
  return normalized;
 }
 function stateContext(def,state,matches){return{key:def.kind+':c',id:'c',state,matches,start:matches.find(m=>m.role==='start'),locations:[],target:'chat'}}
@@ -167,6 +184,23 @@ test('reviewed agent failure copy and sticky notice reject missing, changed and 
  assert.throws(()=>baselineAgentFailureStyle('.unreviewed{color:red}'+source),/unrelated ChatView styles/);
 });
 
+test('reviewed statistics readout rejects missing, changed and retired copy without hiding unrelated deltas',()=>{
+ for(const language of ['en','zh']) {
+  const current=json(apis[1].plugin[language]),normalized=baselineProductCopy(language,current);
+  for(const key of Object.keys(statsRailLocales[language])) {
+   const missing={...current};delete missing[key];
+   assert.throws(()=>baselineProductCopy(language,missing),/statistics rail string/);
+   assert.throws(()=>baselineProductCopy(language,{...current,[key]:'incorrect readout'}),/statistics rail string/);
+  }
+  for(const key of retiredStatsKeys) {
+   assert.throws(()=>baselineProductCopy(language,{...current,[key]:'returned'}),/retired statistics sentence/);
+   assert.equal(Object.hasOwn(current,key),false,'retired sentence key stays out of the product dictionary');
+  }
+  const unrelated=baselineProductCopy(language,{...current,'stats.unreviewed':'unexpected'});
+  assert.equal(unrelated['stats.unreviewed'],'unexpected');
+  assert.notDeepEqual(unrelated,normalized,'unrelated dictionary changes must still fail strict parity');
+ }
+});
 test('fork/subagent breadcrumbs preserve source ancestry, missing parents and cycle guards',()=>{
  const list={byId:{parent:{id:'parent',displayTitle:'Parent',origin:'user'},fork:{id:'fork',displayTitle:'Fork',origin:'fork',parentId:'parent'},agent:{id:'agent',displayTitle:'Agent',origin:'subagent',parentId:'fork'}}};
  const readers=[legacySource,compiled.entry].map(source=>harness(exposeConversation(source,['deriveAncestry'])).plugin.deriveAncestry);
@@ -222,14 +256,15 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
  // Reviewed product styling: pin each intentionally changed sheet explicitly,
  // rather than weakening frozen-style parity for unrelated components.
  const reviewedStyles = {
-  'skeleton/InputBar': '62fa5c5f10a5c38f6d04f8a082a9f9fe470a1d11453dcaec442ce3350519029d',
-  'chat/StatsLine': 'eab66196169a782ec6d580f699fc2398c429baa105576b82b0dc0d834898ee60',
+  'skeleton/InputBar': '69ab58356bf9c4f406b0e36c96b7fe2b6239d92da102990f6245bf9e86008653',
+  'chat/StatsLine': 'ba35718bf3223a6dffe674f366dec0b73b2bd5cc6e0315ac734a414c9a1671d4',
   'skeleton/ContextMeter': '7a712d895a114ee0a5cddc1cdbc55692e6d6b52289ef4409e927809bbc694ff2',
   'skeleton/PermissionSelect': 'e91048346a2948571cfa55321fd43f8a22cf96c0b0b89b4bd4882736a29eda74',
   'skeleton/TodoPanel': 'aaf719207bee33d33551031960513e1d0c8b7b01bb35a807a362f7b75e849fdc',
   'queue/QueueDock': '3835c9f5eb3ccf4c71fdb5b6b9db96a37b726c6017a43770f537de092e32c1e2',
   // Turn activity and failure notice are separately pinned; the new spinner sheet is additive.
-  'chat/ChatView': 'ea56a6c3f52b53edd7d339e8d5c97a9c1a76fe032832c509bef447b84b164647',
+  // The back-to-bottom button sits in the reading column's right margin.
+  'chat/ChatView': 'bb932c6acad33381f451b56fd017327ad077f24aaac954a5df8b136e9707a790',
   'chat/LoadingIndicator': 'eab9ae6b02846b4d42d31cf3b573224d178e3c4cd0fe00bd23c8e0e980acc5f1',
   // Narrow-viewport tab strip: a 16px gap plus horizontal scroll below 600px,
   // and a 44px row on coarse pointers. Every byte above that append is
@@ -239,10 +274,12 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
   // Single scroll viewport: tool-card bodies are unbounded flow content.
   'chat/ContextInjectionRow': 'a93c66501248ea81479dfdc94239cfcfa55ed4b09269ec41be8dcb5fc580dc01',
   // Single scroll viewport: tool-card bodies are unbounded flow content.
-  'chat/AssistantMarkdown': '21e87d66c7014089958318a0af382f05373ffda1081bc6284a478d8b4cd8293e',
+  'chat/AssistantMarkdown': '5b832df3655800e6db173b6ac2eea38c6b19551ed674396e25597dfe63e257ca',
   // Single scroll viewport: with a question card present the composer seat
   // leaves sticky and joins the flow tail (static, no gradient).
-  'skeleton/ConversationRoot': '6ded2345dd75573fc008cc1a0d0741582adf4ee07e04652359f7e41956a987ab',
+  'skeleton/ConversationRoot': '12d7914d05b27a95d983c1e080e9a0911ee543d7636e9ae72bd5a9399856b723',
+  // The panel body owns its scrolling, so it opts in to the sticky code banner.
+  'skeleton/DetailsPanel': 'cf9ef0931d73606863365cabbde4bb102914218c7ef128b682545b0a065c4c4a',
  };
  assert.equal(Object.hasOwn(oldCss,'@xharness/dsh-client-ui-conversation/LoadingIndicator.module.css'),false,'the frozen baseline must not acquire the new spinner sheet');
  for(const [name,sha] of Object.entries(reviewedStyles)) {
@@ -260,7 +297,7 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
  const argumentLocales={"en": {"tool.arguments.generating": "Generating tool input", "tool.arguments.received": "{size} received", "tool.arguments.elapsed": "{seconds}s", "tool.arguments.notExecuted": "The model is still generating input. The tool has not executed yet.", "tool.arguments.preview": "Input preview", "tool.arguments.raw": "Raw JSON", "tool.arguments.showPreview": "Show preview", "tool.arguments.showRaw": "Show raw JSON", "tool.arguments.waiting": "Waiting for input…", "tool.arguments.truncated": "Preview limited to {count} characters. The actual tool input is not truncated."}, "zh": {"tool.arguments.generating": "正在生成工具参数", "tool.arguments.received": "已接收 {size}", "tool.arguments.elapsed": "{seconds} 秒", "tool.arguments.notExecuted": "模型仍在生成参数，工具尚未执行。", "tool.arguments.preview": "内容预览", "tool.arguments.raw": "原始 JSON", "tool.arguments.showPreview": "查看内容预览", "tool.arguments.showRaw": "查看原始 JSON", "tool.arguments.waiting": "等待参数内容…", "tool.arguments.truncated": "仅预览前 {count} 个字符，实际工具参数未被截断。"}};
  const newKeys=[...Object.keys(argumentLocales.en),'approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'];
  const withoutNew=locale=>Object.fromEntries(Object.entries(json(locale)).filter(([key])=>!newKeys.includes(key)));
- for(const language of ['en','zh']){assert.deepEqual(Object.fromEntries(Object.keys(argumentLocales[language]).map(key=>[key,apis[1].plugin[language][key]])),argumentLocales[language]);assert.deepEqual(withoutNew(baselineProductCopy(language, apis[1].plugin[language])),json(apis[0].plugin[language]));for(const key of newKeys)assert.equal(typeof apis[1].plugin[language][key],'string')}
+ for(const language of ['en','zh']){assert.deepEqual(Object.fromEntries(Object.keys(argumentLocales[language]).map(key=>[key,apis[1].plugin[language][key]])),argumentLocales[language]);assert.deepEqual(withoutNew(baselineProductCopy(language, apis[1].plugin[language])),withoutRetiredStats(apis[0].plugin[language]));for(const key of newKeys)assert.equal(typeof apis[1].plugin[language][key],'string')}
  for(const [language,expected] of [['en','Reviewing on your behalf…'],['zh','正在代你审核…']])assert.equal(apis[1].plugin[language]['approval.reviewing'],expected);
  assert.deepEqual(Object.fromEntries(['message.foldedTools','message.expandedTools'].map(key=>[key,apis[1].plugin.en[key]])),{'message.foldedTools':'{count} completed operations','message.expandedTools':'Earlier completed operations · {count}'})
  assert.deepEqual(Object.fromEntries(['message.foldedTools','message.expandedTools'].map(key=>[key,apis[1].plugin.zh[key]])),{'message.foldedTools':'已收起 {count} 个完成的操作','message.expandedTools':'较早的已完成操作 · {count}'})
@@ -271,15 +308,20 @@ test('complete apply registration: keyed nodes, resident shell, overlays, docks,
  const host={getSnapshot:()=>({value:{busyEnter:'queue'}}),subscribe:()=>()=>{},set:async()=>{}};
  const ctx={effect:fn=>{const off=fn();if(typeof off==='function')effects.push(off)},locale:{register:(...args)=>dicts.push(args),bind:()=>k=>k},sessions:{provide:spec=>{events.push(['provide',spec.hooks,spec.props]);return()=>{}},list:{getSnapshot:()=>({byId:{}})},scope(){},on:()=>()=>{}},workspaces:{},layout:{},settingsScope:{bind:()=>host},conversationEvents:{register:d=>defs.push({kind:d.kind,target:d.target}),registerFallback:d=>defs.push({kind:d.kind,target:d.target,fallback:true})},conversationViews:{register:d=>views.push({target:d.target})},slots:{inject:(_n,fn)=>fn(),register:(spec,component)=>slots.push({spec,component}),entries:()=>[],subscribe:()=>()=>{},getVersion:()=>0},get:n=>ctx[n],on:(n)=>{events.push(n);return()=>{}},plugin:(plugin,config)=>{if(typeof plugin==='function')new plugin(ctx,config);else plugin.apply(ctx)}};
  api.apply(ctx);
- const normalize=slots.map(({spec})=>json({...spec,inject:undefined,select:undefined,store:undefined,label:typeof spec.label==='function'?spec.label():spec.label})).sort((a,b)=>(a.name+':'+(a.key??a.id??'')).localeCompare(b.name+':'+(b.key??b.id??'')));
+ const normalize=slots.map(({spec})=>json({...spec,inject:undefined,select:undefined,store:undefined,label:typeof spec.label==='function'?spec.label():spec.label})).sort((a,b)=>(a.name+':'+(a.key??a.id??'')).localeCompare(b.name+':'+(a.key??a.id??'')));
+ const recovery=normalize.findIndex(spec=>spec.name==='conversation.session.header.utilities'&&spec.id==='session-recovery');
+ const legacyStatIdx=normalize.findIndex(spec=>spec.name==='conversation.composer.dock'&&spec.id==='stats');
+ if(legacyStatIdx>=0)normalize.splice(legacyStatIdx,1);
  if(api===apis[1].plugin){
-  const recovery=normalize.findIndex(spec=>spec.name==='conversation.session.header.utilities'&&spec.id==='session-recovery');
   assert.ok(recovery>=0);assert.deepEqual(normalize[recovery],{name:'conversation.session.header.utilities',id:'session-recovery',order:90,locale:'conversation'});
   normalize.splice(recovery,1);
+  const statIdx=normalize.findIndex(spec=>spec.name==='conversation.composer.status'&&spec.id==='stats');
+  assert.ok(statIdx>=0);assert.deepEqual(normalize[statIdx],{name:'conversation.composer.status',id:'stats',order:0,locale:'conversation'});
+  normalize.splice(statIdx,1);
  }
  // Explicit additive environment slot, while old registrations remain unchanged.
- if(api===apis[1].plugin){const root=normalize.find(spec=>spec.name==='conversation');assert.deepEqual(root.children['conversation.hero.runtimeEnvironment'],{kind:'single',scope:'root'});delete root.children['conversation.hero.runtimeEnvironment'];}
- const baselineDicts=json(dicts).map(([ns,languages])=>[ns,Object.fromEntries(Object.entries(languages).map(([language,values])=>[language,Object.fromEntries(Object.entries(api === apis[1].plugin ? baselineProductCopy(language, values) : values).filter(([key])=>!key.startsWith('tool.arguments.')&&!['approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'].includes(key)))]))]);
+ if(api===apis[1].plugin){const root=normalize.find(spec=>spec.name==='conversation');assert.deepEqual(root.children['conversation.hero.runtimeEnvironment'],{kind:'single',scope:'root'});delete root.children['conversation.hero.runtimeEnvironment'];delete root.children['conversation.composer.status'];}
+ const baselineDicts=json(dicts).map(([ns,languages])=>[ns,Object.fromEntries(Object.entries(languages).map(([language,values])=>[language,Object.fromEntries(Object.entries(api === apis[1].plugin ? baselineProductCopy(language, values) : withoutRetiredStats(values)).filter(([key])=>!key.startsWith('tool.arguments.')&&!['approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'].includes(key)))]))]);
  receipts.push({slots:normalize,defs,views,dicts:baselineDicts,events});}
  assert.deepEqual(json(receipts[1]),json(receipts[0]));assert.equal(receipts[1].defs.length,13);
 });
@@ -406,3 +448,43 @@ test('message fork opens only after success and reports failures on the unchange
  }
  assert.equal(calls.some(row=>row[0]==='open'),false,'a failed fork must not change the active chat');
 })
+
+// Sticky chrome belongs to the scroll container that owns it. The transcript is
+// one scrollport: a banner, label or heading sticking to its top slides over the
+// very text it belongs to. Code banners stick only where a scroll-container
+// owner opts in; tool-card labels and diff headings flow with their card.
+function stickyChromeFaults(sheets) {
+ const faults=[];
+ const rule=(sheet,selector)=>{const m=sheet.match(new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*\\{([^}]*)\\}'));return m?m[1]:null};
+ const banner=rule(sheets.codeBlock,'.bannerWrap');
+ if(banner===null||!/position:\s*var\(--dsl-code-block-banner-position,\s*static\)/.test(banner))faults.push('code block banner must flow unless a scroll-container owner opts in');
+ for(const [sheet,selector] of [[sheets.toolRow,'.Dh215a_ioLabel'],[sheets.bashSample,'.ANgngG_ioLabel'],[sheets.reviewDiff,'.xh-review-pane-heading']]) {
+  const body=rule(sheet,selector);
+  if(body===null||/sticky/.test(body))faults.push(selector+' must not stick in transcript flow');
+ }
+ for(const [sheet,selector] of [[sheets.filePane,'.xhfile-body'],[sheets.detailsPanel,'.JXxdLa_body'],[sheets.cordisDefine,'.tCdZ6q_sourcePanel'],[sheets.cordisDefine,'.tCdZ6q_codeSection']]) {
+  const body=rule(sheet,selector);
+  if(body===null||!/--dsl-code-block-banner-position:\s*sticky/.test(body)||!/overflow(?:-y)?:\s*(?:auto|scroll)/.test(body))faults.push(selector+' may opt in only as a scroll container');
+ }
+ return faults;
+}
+test('sticky chrome is owned by scroll containers and never floats over transcript flow',()=>{
+ const read=name=>readFileSync(new URL('../ui/src/modules/'+name,import.meta.url),'utf8');
+ const sheets={codeBlock:read('platform/primitives/markdown/CodeBlock.module.css'),toolRow:read('tool/tool/components/ToolRow.css'),bashSample:read('tool/tool/toolviews/bash-sample.css'),reviewDiff:read('tool/tool/components/ReviewDiffBlock.css'),filePane:read('browser/file-display/FilePane.css'),detailsPanel:read('conversation/skeleton/DetailsPanel.css'),cordisDefine:read('cordis/CordisDefineRow.css')};
+ assert.deepEqual(stickyChromeFaults(sheets),[]);
+ // Negative controls: every reviewed rule put back to its sticky or scroll-less
+ // past must be reported, and the mutation must actually change the sheet.
+ const label='color:var(--dsw-alias-label-caption);align-self:start}';
+ const stickyLabel='color:var(--dsw-alias-label-caption);align-self:start;position:sticky;top:0}';
+ for(const [name,changed] of [
+  ['code block banner sticky again',{...sheets,codeBlock:sheets.codeBlock.replace('position: var(--dsl-code-block-banner-position, static)','position: sticky')}],
+  ['tool input/output label sticky again',{...sheets,toolRow:sheets.toolRow.replace('.Dh215a_ioLabel{'+label,'.Dh215a_ioLabel{'+stickyLabel)}],
+  ['bash sample label sticky again',{...sheets,bashSample:sheets.bashSample.replace('.ANgngG_ioLabel{'+label,'.ANgngG_ioLabel{'+stickyLabel)}],
+  ['diff pane heading sticky again',{...sheets,reviewDiff:sheets.reviewDiff.replace('.xh-review-pane-heading{display:block;','.xh-review-pane-heading{position:sticky;top:0;z-index:1;display:block;')}],
+  ['detail panel opts in without scrolling',{...sheets,detailsPanel:sheets.detailsPanel.replace('overflow-y:auto;--dsl-code-block-banner-position:sticky','--dsl-code-block-banner-position:sticky')}],
+  ['file pane opts in without scrolling',{...sheets,filePane:sheets.filePane.replace('padding:20px;overflow:auto;overflow-wrap:anywhere;--dsl-code-block-banner-position:sticky','padding:20px;overflow-wrap:anywhere;--dsl-code-block-banner-position:sticky')}],
+ ]) {
+  assert.notDeepEqual(changed,sheets,name+': the control must change a sheet');
+  assert.ok(stickyChromeFaults(changed).length>0,name);
+ }
+});

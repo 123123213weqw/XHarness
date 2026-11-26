@@ -335,9 +335,7 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
         let generation = 0;
         let lastGeometry = '';
         let binding = null;
-        let renewalTimer;
         let loading = false;
-        let completing = false;
         let eventsReady = false;
         let pageVersion = 0;
         let locationFrame = null;
@@ -355,7 +353,6 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
             await send('desktop_browser_activate', { tabId: null });
             lastGeometry = 'hidden';
             binding = null;
-            clearTimeout(renewalTimer);
         };
         const syncBounds = () => {
             const requested = ++generation;
@@ -427,23 +424,10 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
                         await hide();
                         throw Error(accessText('浏览器会话绑定失败，请检查桌面版本。', 'Browser session binding failed; check the desktop version.'));
                     }
-                    // No status polling or extra permission UI. Refresh the same binding
-                    // before expiry; native renewal preserves the current observation frame.
+                    // Cache presentation acknowledgement only. Authenticated Host calls
+                    // renew execution; no visible-UI renewal timer owns the page lifetime.
                     const delay = Math.max(1000, Math.min(300000, grant.remainingMs / 2));
                     binding = { key, until: performance.now() + delay };
-                    clearTimeout(renewalTimer);
-                    renewalTimer = setTimeout(syncBounds, delay);
-                }
-                const requestId = itemRef.current.modelRequestId;
-                if (!loading && binding && requestId && !completing) {
-                    completing = true;
-                    const accepted = await send('desktop_browser_control_reply', { requestId, reply: { status: 'ready', tab_id: item.id } });
-                    if (accepted === true) {
-                        onUpdate({ modelRequestId: undefined });
-                        window.dispatchEvent(new CustomEvent('xharness:browser-control-settled', { detail: requestId }));
-                    }
-                    else
-                        completing = false;
                 }
                 return true;
             }).catch((error) => {
@@ -539,7 +523,6 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
             disposed = true;
             window.removeEventListener('xharness:browser-closing', onClosing);
             generation++;
-            clearTimeout(renewalTimer);
             observer.disconnect();
             stopWatchingSurfaces();
             window.removeEventListener('resize', syncBounds);
@@ -548,14 +531,8 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
                 cancelAnimationFrame(locationFrame);
             if (nativeSyncRef.current === syncBounds)
                 nativeSyncRef.current = null;
-            const requestId = itemRef.current.modelRequestId;
-            if (requestId) {
-                // Closing/switching chats cancels the rendezvous immediately, not after
-                // its full load timeout. Native verifies the main caller and request ID.
-                void native.core.invoke('desktop_browser_control_reply', { requestId, reply: { status: 'failed' } }).catch(() => { });
-                closing = true;
-                void native.core.invoke('desktop_browser_close', { tabId: item.id }).catch(() => { });
-            }
+            // Unmount/hide detaches presentation only. Service-owned open/ready and
+            // the authenticated chat binding survive selecting a different chat.
             void invoke('desktop_browser_activate', { tabId: null }).catch(() => { });
         };
     }, [item.id, open, sessionId]);
@@ -601,7 +578,11 @@ function NativeBrowserPane({ item, sessionId = null, open = false, onUpdate, onC
         if (native && preferHeadless && sessionId) {
             setDraft(result.url);
             setError('');
-            void native.core.invoke('desktop_headless_control', { owner: sessionId, arguments: { action: 'open', url: result.url } }).catch((error) => setError(String(error)));
+            void native.core.invoke('desktop_headless_control', { owner: sessionId, arguments: { action: 'open', url: result.url } }).then(raw => {
+                const reply = (0, runtime_types_1.objectValue)(raw);
+                if (reply.ok !== true)
+                    setError(typeof reply.message === 'string' ? reply.message : '后台浏览器未打开');
+            }, (error) => setError(String(error)));
             return;
         }
         const entries = [...(item.entries ?? []).slice(0, item.position + 1), result.url];
@@ -784,12 +765,8 @@ function apply(ctx) {
             const id = event instanceof CustomEvent ? (0, runtime_types_1.objectValue)(event.detail).id : undefined;
             if (typeof id !== 'string' || !id)
                 return;
-            if (id.startsWith('headless:')) {
-                const owner = event instanceof CustomEvent ? (0, runtime_types_1.objectValue)(event.detail).owner : undefined;
-                if (typeof owner === 'string')
-                    void native.core.invoke('desktop_headless_control', { owner, tabId: id, arguments: { action: 'close' } }).catch(() => { });
-                return;
-            }
+            if (id.startsWith('headless:'))
+                return; // The owning workspace awaits its exact close receipt.
             // Closing must not wait behind an unrelated navigation/observation.
             void native.core.invoke('desktop_browser_close', { tabId: id }).catch(() => { });
         };
@@ -1027,14 +1004,14 @@ function workspaceDockVisibility(event) {
 // source: src/modules/browser/Browser.css
 
 Object.defineProperty(exports, '__esModule', { value: true });
-exports.default = "\n.xhbrowser-header-trigger{display:inline-grid;place-items:center;flex:none;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#aaa);cursor:pointer}\n.xhbrowser-header-trigger:hover,.xhbrowser-header-trigger:focus-visible{color:var(--dsw-alias-label-primary,#ddd);background:var(--dsw-alias-interactive-bg-hover,#303036)}\n.xhbrowser-header-trigger:focus-visible{outline:2px solid currentColor;outline-offset:2px}\n.xhbrowser-header-trigger[aria-expanded=\"true\"]{color:var(--dsw-alias-label-primary,#ddd)}\n.xhbrowser-dock-icon{display:block;flex:none}\n.xhbrowser-dock-panel{opacity:0;transition:opacity 180ms ease-out}\n.xhbrowser-dock-chevron{transform-box:fill-box;transform-origin:center;transform:rotate(0deg);transition:transform 180ms ease-out}\n.xhbrowser-header-trigger[aria-expanded=\"true\"] .xhbrowser-dock-panel{opacity:.1}\n.xhbrowser-header-trigger[aria-expanded=\"true\"] .xhbrowser-dock-chevron{transform:rotate(180deg)}\n@media(prefers-reduced-motion:reduce){.xhbrowser-dock-chevron,.xhbrowser-dock-panel{transition:none}}\n.xhbrowser-pane{box-sizing:border-box;width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;background:var(--dsw-alias-bg-base,#1c1c1e);color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-icon{display:inline-grid;place-items:center;flex:none;width:29px;height:29px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#aaa);cursor:pointer}.xhbrowser-icon:hover:not(:disabled){color:var(--dsw-alias-label-primary,#fff);background:var(--dsw-alias-interactive-bg-hover,#35353a)}.xhbrowser-icon:disabled{opacity:.35;cursor:default}\n.xhbrowser-toolbar{display:flex;align-items:center;gap:4px;flex:none;height:49px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1,#34343a)}.xhbrowser-address-form{display:flex;align-items:center;gap:8px;flex:1;min-width:0;height:31px;padding:0 10px;margin-left:3px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:7px;background:var(--dsw-alias-bg-layer-2,#2b2b30);color:var(--dsw-alias-label-tertiary,#aaa)}.xhbrowser-address-form:focus-within{border-color:var(--dsw-alias-label-primary,#eee)}.xhbrowser-address-form input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;font-size:12px}.xhbrowser-address-form input::placeholder{color:var(--dsw-alias-label-tertiary,#888)}.xhbrowser-external{display:grid;place-items:center;flex:none;width:28px;height:28px;color:var(--dsw-alias-label-secondary,#aaa);border-radius:6px}.xhbrowser-external:hover{background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-content{flex:1;min-height:0;overflow:auto;display:grid;place-items:center;background:var(--dsw-alias-bg-base,#1c1c1e)}.xhbrowser-empty{--xhbrowser-accent:var(--dsw-alias-label-primary,#171717);text-align:center;max-width:340px;padding:36px 28px}.xhbrowser-empty-mark{display:grid;place-items:center;margin:0 auto 20px;width:56px;height:56px;border-radius:16px;color:var(--xhbrowser-accent);background:color-mix(in srgb,var(--xhbrowser-accent) 8%,transparent);box-shadow:0 8px 24px color-mix(in srgb,var(--xhbrowser-accent) 16%,transparent)}.xhbrowser-empty-mark svg{width:28px;height:28px}.xhbrowser-empty h2{margin:0 0 8px;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#eee)}.xhbrowser-empty p{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:1.7;overflow-wrap:anywhere}.xhbrowser-open-link{display:inline-flex;align-items:center;gap:6px;margin-top:20px;padding:8px 14px;border:1px solid color-mix(in srgb,var(--xhbrowser-accent) 28%,transparent);border-radius:8px;background:color-mix(in srgb,var(--xhbrowser-accent) 8%,transparent);color:var(--xhbrowser-accent);font-size:12px;font-weight:500;text-decoration:none;transition:background .15s ease}.xhbrowser-open-link:hover{background:color-mix(in srgb,var(--xhbrowser-accent) 16%,transparent)}.xhbrowser-error{padding:7px 16px;color:var(--dsw-alias-state-error-primary,#e87979);font-size:11px}\n.xhbrowser-pane{position:relative}\n.xhbrowser-toolbar{gap:8px;height:54px;padding:0 12px}\n.xhbrowser-nav{display:flex;align-items:center;gap:1px;flex:none;padding:2px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:11px;background:var(--dsw-alias-bg-layer-2,#29292e)}\n.xhbrowser-nav .xhbrowser-icon{width:27px;height:27px}\n.xhbrowser-address-form{height:34px;margin:0;border-radius:11px;padding:0 12px}\n.xhbrowser-address-form input{text-align:left;font-size:12px}\n.xhbrowser-more{display:grid;place-items:center;flex:none;width:30px;height:30px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-secondary,#aaa);font-size:16px;line-height:1;cursor:pointer}\n.xhbrowser-more:hover,.xhbrowser-more[aria-expanded=true]{color:var(--dsw-alias-label-primary,#eee);background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-menu{position:absolute;right:12px;top:49px;z-index:30;display:flex;flex-direction:column;min-width:164px;padding:5px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#29292e);box-shadow:0 12px 30px #0003}\n.xhbrowser-menu button,.xhbrowser-menu a{display:block;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;font-size:12px;text-align:left;text-decoration:none;cursor:pointer}\n.xhbrowser-menu button:hover:not(:disabled),.xhbrowser-menu a:hover{background:var(--dsw-alias-interactive-bg-hover,#35353a)}.xhbrowser-menu button:disabled{opacity:.42;cursor:default}\n.xhbrowser-content-home{display:block}\n.xhbrowser-home{box-sizing:border-box;max-width:560px;margin:0 auto;padding:26px 22px 40px}\n.xhbrowser-home-section{margin:0 0 29px}.xhbrowser-home-section h2{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}\n.xhbrowser-tools button{min-height:46px;padding:0 14px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-primary,#eee);font:inherit;font-size:12px;text-align:left;cursor:pointer}\n.xhbrowser-tools button:hover,.xhbrowser-recents button:hover{background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-recents{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:11px;overflow:hidden}\n.xhbrowser-recents button{display:flex;align-items:center;gap:10px;min-width:0;min-height:47px;padding:7px 10px;border:0;border-bottom:1px solid var(--dsw-alias-border-l2,#444);background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;text-align:left;cursor:pointer}\n.xhbrowser-recents button:last-child{border-bottom:0}.xhbrowser-site-mark{display:grid;place-items:center;flex:none;width:29px;height:29px;border-radius:7px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-tertiary,#999)}\n.xhbrowser-site-label{display:flex;flex-direction:column;min-width:0;gap:1px}.xhbrowser-site-label strong,.xhbrowser-site-label small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xhbrowser-site-label strong{font-size:12px;font-weight:500}.xhbrowser-site-label small{font-size:10px;color:var(--dsw-alias-label-tertiary,#999)}\n.xhbrowser-home-hint{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:1.6}\n.xhbrowser-pane :is(button,input,a):focus-visible{outline:2px solid var(--dsw-alias-label-primary,#eee);outline-offset:2px}\n.xhbrowser-pane{container-type:inline-size}\n.xhbrowser-toolbar{height:58px;gap:6px;padding:0 10px}\n.xhbrowser-nav,.xhbrowser-actions{display:flex;align-items:center;flex:none;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#29292e)}\n.xhbrowser-nav{gap:0;padding:2px 3px}.xhbrowser-actions{gap:0;padding:2px 3px}\n.xhbrowser-nav-divider{width:1px;height:17px;margin:0 2px;background:var(--dsw-alias-border-l2,#444)}\n.xhbrowser-nav .xhbrowser-icon,.xhbrowser-actions .xhbrowser-icon{width:26px;height:27px;border-radius:999px}\n.xhbrowser-annotate{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:none;height:34px;padding:0 11px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-secondary,#aaa);font:inherit;font-size:12px}\n.xhbrowser-annotate:disabled{cursor:not-allowed;opacity:.58}\n.xhbrowser-address-form{height:34px;border-radius:999px;padding:0 8px;min-width:0}\n.xhbrowser-address-form input{text-align:center;text-overflow:ellipsis;font-size:12px}\n.xhbrowser-address-form:focus-within input{text-align:left;text-overflow:clip}\n.xhbrowser-download{color:#3b83e8}.xhbrowser-download:hover:not(:disabled){color:#2266d4}\n.xhbrowser-more{width:33px;height:33px;border-radius:999px}\n.xhbrowser-menu,.xhbrowser-downloads{top:54px}\n.xhbrowser-downloads{position:absolute;right:46px;z-index:30;box-sizing:border-box;width:min(280px,calc(100% - 28px));padding:12px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:12px;background:var(--dsw-alias-bg-layer-2,#29292e);box-shadow:0 12px 30px #0003;font-size:12px}\n.xhbrowser-downloads>strong{display:block;margin-bottom:9px}.xhbrowser-downloads>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--dsw-alias-border-l2,#444)}.xhbrowser-downloads>div span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xhbrowser-downloads small{flex:none;color:var(--dsw-alias-label-tertiary,#999)}.xhbrowser-downloads p{margin:0;color:var(--dsw-alias-label-tertiary,#999)}\n@container(max-width:420px){.xhbrowser-annotate{width:33px;padding:0}.xhbrowser-annotate span{display:none}}\n@container(max-width:390px){.xhbrowser-toolbar{gap:4px;padding:0 7px}.xhbrowser-nav .xhbrowser-icon,.xhbrowser-actions .xhbrowser-icon{width:23px}.xhbrowser-more,.xhbrowser-annotate{width:29px}.xhbrowser-home{padding:22px 16px}.xhbrowser-tools{grid-template-columns:1fr}}\n/* Reserve the border outside the child WebView's measured rectangle: native\n   views cannot be overlaid with renderer CSS. No layout shift while active. */\n.xhbrowser-pane[data-model-observer=true]{border:2px solid transparent;transition:border-color 120ms ease-out}\n.xhbrowser-pane[data-model-active=true]{border-color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-model-activity{display:inline-grid;place-items:center;flex:none;width:18px;color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-model-activity[data-active=false]{visibility:hidden}\n.xhbrowser-activity-label{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}\n@media(prefers-reduced-motion:reduce){.xhbrowser-pane[data-model-observer=true]{transition:none}}\n.xhbrowser-annotate[aria-pressed=true]{color:var(--dsw-alias-label-primary,#fff);border-color:#5689ff;background:#5689ff22}\n.xhbrowser-pick-notice{flex:none;padding:7px 12px;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary,#bbb);border-bottom:1px solid var(--dsw-alias-border-l1,#34343a)}\n.xhbrowser-headless-address{flex:1;min-width:0;border:0;background:transparent;color:inherit;padding:8px;font:inherit}\n.xhbrowser-headless-canvas{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:var(--background-secondary,#202020);overflow:hidden}\n.xhbrowser-headless-canvas img{display:block;width:100%;height:100%;object-fit:contain}\n.xhbrowser-headless-canvas p{padding:24px;color:var(--text-secondary,#999);font-size:13px}\n.xhbrowser-headless-footer{display:flex;justify-content:space-between;gap:8px;padding:8px 12px;font-size:11px;color:var(--text-secondary,#999)}\n\n/* Native view bounds reserve letterboxing; CSS never transforms a guest page. */\n.xhbrowser-viewport-toolbar{display:flex;align-items:center;justify-content:center;gap:12px;flex:none;min-height:36px;padding:2px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,#34343a)}\n.xhbrowser-viewport-toggle{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:6px;padding:4px 8px;background:transparent;color:var(--dsw-alias-label-secondary,#bbb);font:inherit;font-size:12px;cursor:pointer}\n.xhbrowser-viewport-toggle:hover{color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-viewport-toggle[aria-pressed=true]{color:var(--dsw-alias-label-primary,#eee);background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-viewport-toggle:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#eee);outline-offset:1px}\n";
+exports.default = "\n.xhbrowser-header-trigger{display:inline-grid;place-items:center;flex:none;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#aaa);cursor:pointer}\n.xhbrowser-header-trigger:hover,.xhbrowser-header-trigger:focus-visible{color:var(--dsw-alias-label-primary,#ddd);background:var(--dsw-alias-interactive-bg-hover,#303036)}\n.xhbrowser-header-trigger:focus-visible{outline:2px solid currentColor;outline-offset:2px}\n.xhbrowser-header-trigger[aria-expanded=\"true\"]{color:var(--dsw-alias-label-primary,#ddd)}\n.xhbrowser-dock-icon{display:block;flex:none}\n.xhbrowser-dock-panel{opacity:0;transition:opacity 180ms ease-out}\n.xhbrowser-dock-chevron{transform-box:fill-box;transform-origin:center;transform:rotate(0deg);transition:transform 180ms ease-out}\n.xhbrowser-header-trigger[aria-expanded=\"true\"] .xhbrowser-dock-panel{opacity:.1}\n.xhbrowser-header-trigger[aria-expanded=\"true\"] .xhbrowser-dock-chevron{transform:rotate(180deg)}\n@media(prefers-reduced-motion:reduce){.xhbrowser-dock-chevron,.xhbrowser-dock-panel{transition:none}}\n.xhbrowser-pane{box-sizing:border-box;width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;background:var(--dsw-alias-bg-base,#1c1c1e);color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-icon{display:inline-grid;place-items:center;flex:none;width:29px;height:29px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#aaa);cursor:pointer}.xhbrowser-icon:hover:not(:disabled){color:var(--dsw-alias-label-primary,#fff);background:var(--dsw-alias-interactive-bg-hover,#35353a)}.xhbrowser-icon:disabled{opacity:.35;cursor:default}\n.xhbrowser-toolbar{display:flex;align-items:center;gap:4px;flex:none;height:49px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1,#34343a)}.xhbrowser-address-form{display:flex;align-items:center;gap:8px;flex:1;min-width:0;height:31px;padding:0 10px;margin-left:3px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:7px;background:var(--dsw-alias-bg-layer-2,#2b2b30);color:var(--dsw-alias-label-tertiary,#aaa)}.xhbrowser-address-form:focus-within{border-color:var(--dsw-alias-label-primary,#eee)}.xhbrowser-address-form input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;font-size:12px}.xhbrowser-address-form input::placeholder{color:var(--dsw-alias-label-tertiary,#888)}.xhbrowser-external{display:grid;place-items:center;flex:none;width:28px;height:28px;color:var(--dsw-alias-label-secondary,#aaa);border-radius:6px}.xhbrowser-external:hover{background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-content{flex:1;min-height:0;overflow:auto;display:grid;place-items:center;background:var(--dsw-alias-bg-base,#1c1c1e)}.xhbrowser-empty{--xhbrowser-accent:var(--dsw-alias-label-primary,#171717);text-align:center;max-width:340px;padding:36px 28px}.xhbrowser-empty-mark{display:grid;place-items:center;margin:0 auto 20px;width:56px;height:56px;border-radius:16px;color:var(--xhbrowser-accent);background:color-mix(in srgb,var(--xhbrowser-accent) 8%,transparent);box-shadow:0 8px 24px color-mix(in srgb,var(--xhbrowser-accent) 16%,transparent)}.xhbrowser-empty-mark svg{width:28px;height:28px}.xhbrowser-empty h2{margin:0 0 8px;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#eee)}.xhbrowser-empty p{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:1.7;overflow-wrap:anywhere}.xhbrowser-open-link{display:inline-flex;align-items:center;gap:6px;margin-top:20px;padding:8px 14px;border:1px solid color-mix(in srgb,var(--xhbrowser-accent) 28%,transparent);border-radius:8px;background:color-mix(in srgb,var(--xhbrowser-accent) 8%,transparent);color:var(--xhbrowser-accent);font-size:12px;font-weight:500;text-decoration:none;transition:background .15s ease}.xhbrowser-open-link:hover{background:color-mix(in srgb,var(--xhbrowser-accent) 16%,transparent)}.xhbrowser-error{padding:7px 16px;color:var(--dsw-alias-state-error-primary,#e87979);font-size:11px}\n.xhbrowser-pane{position:relative}\n.xhbrowser-toolbar{gap:8px;height:54px;padding:0 12px}\n.xhbrowser-nav{display:flex;align-items:center;gap:1px;flex:none;padding:2px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:11px;background:var(--dsw-alias-bg-layer-2,#29292e)}\n.xhbrowser-nav .xhbrowser-icon{width:27px;height:27px}\n.xhbrowser-address-form{height:34px;margin:0;border-radius:11px;padding:0 12px}\n.xhbrowser-address-form input{text-align:left;font-size:12px}\n.xhbrowser-more{display:grid;place-items:center;flex:none;width:30px;height:30px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-secondary,#aaa);font-size:16px;line-height:1;cursor:pointer}\n.xhbrowser-more:hover,.xhbrowser-more[aria-expanded=true]{color:var(--dsw-alias-label-primary,#eee);background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-menu{position:absolute;right:12px;top:49px;z-index:30;display:flex;flex-direction:column;min-width:164px;padding:5px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#29292e);box-shadow:0 12px 30px #0003}\n.xhbrowser-menu button,.xhbrowser-menu a{display:block;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;font-size:12px;text-align:left;text-decoration:none;cursor:pointer}\n.xhbrowser-menu button:hover:not(:disabled),.xhbrowser-menu a:hover{background:var(--dsw-alias-interactive-bg-hover,#35353a)}.xhbrowser-menu button:disabled{opacity:.42;cursor:default}\n.xhbrowser-content-home{display:block}\n.xhbrowser-home{box-sizing:border-box;max-width:560px;margin:0 auto;padding:26px 22px 40px}\n.xhbrowser-home-section{margin:0 0 29px}.xhbrowser-home-section h2{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}\n.xhbrowser-tools button{min-height:46px;padding:0 14px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-primary,#eee);font:inherit;font-size:12px;text-align:left;cursor:pointer}\n.xhbrowser-tools button:hover,.xhbrowser-recents button:hover{background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-recents{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:11px;overflow:hidden}\n.xhbrowser-recents button{display:flex;align-items:center;gap:10px;min-width:0;min-height:47px;padding:7px 10px;border:0;border-bottom:1px solid var(--dsw-alias-border-l2,#444);background:transparent;color:var(--dsw-alias-label-primary,#eee);font:inherit;text-align:left;cursor:pointer}\n.xhbrowser-recents button:last-child{border-bottom:0}.xhbrowser-site-mark{display:grid;place-items:center;flex:none;width:29px;height:29px;border-radius:7px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-tertiary,#999)}\n.xhbrowser-site-label{display:flex;flex-direction:column;min-width:0;gap:1px}.xhbrowser-site-label strong,.xhbrowser-site-label small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xhbrowser-site-label strong{font-size:12px;font-weight:500}.xhbrowser-site-label small{font-size:10px;color:var(--dsw-alias-label-tertiary,#999)}\n.xhbrowser-home-hint{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:1.6}\n.xhbrowser-pane :is(button,input,a):focus-visible{outline:2px solid var(--dsw-alias-label-primary,#eee);outline-offset:2px}\n.xhbrowser-pane{container-type:inline-size}\n.xhbrowser-toolbar{height:58px;gap:6px;padding:0 10px}\n.xhbrowser-nav,.xhbrowser-actions{display:flex;align-items:center;flex:none;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#29292e)}\n.xhbrowser-nav{gap:0;padding:2px 3px}.xhbrowser-actions{gap:0;padding:2px 3px}\n.xhbrowser-nav-divider{width:1px;height:17px;margin:0 2px;background:var(--dsw-alias-border-l2,#444)}\n.xhbrowser-nav .xhbrowser-icon,.xhbrowser-actions .xhbrowser-icon{width:26px;height:27px;border-radius:999px}\n.xhbrowser-annotate{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex:none;height:34px;padding:0 11px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:999px;background:var(--dsw-alias-bg-layer-2,#29292e);color:var(--dsw-alias-label-secondary,#aaa);font:inherit;font-size:12px}\n.xhbrowser-annotate:disabled{cursor:not-allowed;opacity:.58}\n.xhbrowser-address-form{height:34px;border-radius:999px;padding:0 8px;min-width:0}\n.xhbrowser-address-form input{text-align:center;text-overflow:ellipsis;font-size:12px}\n.xhbrowser-address-form:focus-within input{text-align:left;text-overflow:clip}\n.xhbrowser-download{color:#3b83e8}.xhbrowser-download:hover:not(:disabled){color:#2266d4}\n.xhbrowser-more{width:33px;height:33px;border-radius:999px}\n.xhbrowser-menu,.xhbrowser-downloads{top:54px}\n.xhbrowser-downloads{position:absolute;right:46px;z-index:30;box-sizing:border-box;width:min(280px,calc(100% - 28px));padding:12px;border:1px solid var(--dsw-alias-border-l2,#444);border-radius:12px;background:var(--dsw-alias-bg-layer-2,#29292e);box-shadow:0 12px 30px #0003;font-size:12px}\n.xhbrowser-downloads>strong{display:block;margin-bottom:9px}.xhbrowser-downloads>div{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid var(--dsw-alias-border-l2,#444)}.xhbrowser-downloads>div span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xhbrowser-downloads small{flex:none;color:var(--dsw-alias-label-tertiary,#999)}.xhbrowser-downloads p{margin:0;color:var(--dsw-alias-label-tertiary,#999)}\n@container(max-width:420px){.xhbrowser-annotate{width:33px;padding:0}.xhbrowser-annotate span{display:none}}\n@container(max-width:390px){.xhbrowser-toolbar{gap:4px;padding:0 7px}.xhbrowser-nav .xhbrowser-icon,.xhbrowser-actions .xhbrowser-icon{width:23px}.xhbrowser-more,.xhbrowser-annotate{width:29px}.xhbrowser-home{padding:22px 16px}.xhbrowser-tools{grid-template-columns:1fr}}\n/* Reserve the border outside the child WebView's measured rectangle: native\n   views cannot be overlaid with renderer CSS. No layout shift while active. */\n.xhbrowser-pane[data-model-observer=true]{border:2px solid transparent;transition:border-color 120ms ease-out}\n.xhbrowser-pane[data-model-active=true]{border-color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-model-activity{display:inline-grid;place-items:center;flex:none;width:18px;color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-model-activity[data-active=false]{visibility:hidden}\n.xhbrowser-activity-label{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}\n@media(prefers-reduced-motion:reduce){.xhbrowser-pane[data-model-observer=true]{transition:none}}\n.xhbrowser-annotate[aria-pressed=true]{color:var(--dsw-alias-label-primary,#fff);border-color:#5689ff;background:#5689ff22}\n.xhbrowser-pick-notice{flex:none;padding:7px 12px;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary,#bbb);border-bottom:1px solid var(--dsw-alias-border-l1,#34343a)}\n.xhbrowser-headless-address{flex:1;min-width:0;border:0;background:transparent;color:inherit;padding:8px;font:inherit}\n.xhbrowser-headless-canvas{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:var(--background-secondary,#202020);overflow:hidden}\n.xhbrowser-headless-canvas img{display:block;width:100%;height:100%;object-fit:contain}\n.xhbrowser-headless-canvas p{padding:24px;color:var(--text-secondary,#999);font-size:13px}\n.xhbrowser-headless-footer{display:flex;justify-content:space-between;gap:8px;padding:8px 12px;font-size:11px;color:var(--text-secondary,#999)}\n\n/* Native view bounds reserve letterboxing; CSS never transforms a guest page. */\n.xhbrowser-viewport-toolbar{display:flex;align-items:center;justify-content:center;gap:12px;flex:none;min-height:36px;padding:2px 10px;border-bottom:1px solid var(--dsw-alias-border-l1,#34343a)}\n.xhbrowser-viewport-toggle{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:6px;padding:4px 8px;background:transparent;color:var(--dsw-alias-label-secondary,#bbb);font:inherit;font-size:12px;cursor:pointer}\n.xhbrowser-viewport-toggle:hover{color:var(--dsw-alias-label-primary,#eee)}\n.xhbrowser-viewport-toggle[aria-pressed=true]{color:var(--dsw-alias-label-primary,#eee);background:var(--dsw-alias-interactive-bg-hover,#35353a)}\n.xhbrowser-viewport-toggle:focus-visible{outline:2px solid var(--dsw-alias-label-primary,#eee);outline-offset:1px}\n.xhbrowser-headless-input{display:flex;gap:6px;padding:6px 10px;align-items:center}\n.xhbrowser-headless-input input{flex:1;min-width:0;background:transparent;color:inherit;border:1px solid var(--dsw-alias-border-neutral,rgba(127,127,127,.35));padding:5px 7px;border-radius:6px}\n.xhbrowser-headless-canvas img[data-manual-click]{cursor:crosshair}\n.xhbrowser-headless-footer{align-items:center;flex-wrap:wrap}\n.xhbrowser-headless-note{margin:0;padding:5px 10px;font-size:12px;color:var(--dsw-alias-label-secondary)}\n";
 
 },
 "src/modules/browser/file-display/FilePane.css": function(module, exports, require) {
 // source: src/modules/browser/file-display/FilePane.css
 
 Object.defineProperty(exports, '__esModule', { value: true });
-exports.default = ".xhfile-pane{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);overflow:hidden}.xhfile-toolbar{display:flex;align-items:center;gap:6px;flex:none;min-height:49px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-secondary)}.xhfile-toolbar button,.xhfile-body button{border:0;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:inherit;padding:6px 8px;cursor:pointer}.xhfile-toolbar button:hover,.xhfile-body button:hover{background:var(--dsw-alias-interactive-bg-hover)}.xhfile-body{flex:1;min-height:0;padding:20px;overflow:auto;overflow-wrap:anywhere}.xhfile-body table{display:block;max-width:100%;overflow:auto}.xhfile-image{text-align:center}.xhfile-image img,.xhfile-local-image img{max-width:100%;height:auto;display:block;margin:auto}.xhfile-image small{display:block;padding:12px;color:var(--dsw-alias-label-secondary)}.xhfile-local-image{display:block;min-height:24px}.xhfile-body button.xhfile-link{display:inline;padding:0;color:var(--dsw-alias-interactive-primary);background:none;text-decoration:underline}.xhbrowser-file-form{display:flex;gap:6px;margin:12px}.xhbrowser-file-form input{flex:1;min-width:0;padding:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;color:inherit}.xhbrowser-file-form button{background:var(--dsw-alias-bg-layer-2);border:0;border-radius:6px;padding:8px;color:inherit;cursor:pointer}\n.xhfile-toolbar select{max-width:130px;background:var(--dsw-alias-bg-layer-2);color:inherit;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:5px;font:inherit;font-size:12px}.xhfile-body[data-diff]{display:flex;flex-direction:column;padding:0;overflow:hidden}.xhfile-diff{display:flex;flex-direction:column;min-height:0;height:100%;font-size:12px}.xhfile-diff-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-diff-toolbar>span:first-child{flex:1}.xhfile-diff-count{white-space:nowrap;color:var(--dsw-alias-label-secondary)}.xhfile-diff-count b{color:var(--dsw-alias-success-primary,#329c64);font-weight:500}.xhfile-diff-count i{color:var(--dsw-alias-error-primary,#d95c5c);font-style:normal}.xhfile-diff-hint{margin:0;padding:8px 12px;color:var(--dsw-alias-label-secondary);line-height:1.5}.xhfile-diff>p:not(.xhfile-diff-hint){padding:8px 12px}.xhfile-diff-files{flex:none;max-height:140px;overflow:auto;padding:4px 8px;border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-diff-files button{display:flex;width:100%;align-items:center;text-align:left;gap:8px;margin:2px 0;background:transparent}.xhfile-diff-files button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}.xhfile-diff-files button>span{flex:1;min-width:0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}.xhfile-diff-files small{white-space:nowrap}.xhfile-diff-scroll{flex:1;min-height:80px;overflow:auto;overscroll-behavior:contain;overflow-anchor:none}.xhfile-diff-lines{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;width:100%}.xhfile-diff-row{height:22px;line-height:22px;white-space:pre;display:flex}.xhfile-diff-row[data-split]{display:grid;grid-template-columns:1fr 1fr}.xhfile-diff-cell{display:flex;flex:1;min-width:0}.xhfile-diff-num{display:inline-block;flex:0 0 5ch;text-align:right;padding-right:1ch;color:var(--dsw-alias-label-tertiary);user-select:none}.xhfile-diff-marker{display:inline-block;flex:0 0 2ch;user-select:none}.xhfile-diff-cell[data-kind=added]{background:color-mix(in srgb,#36ae70 14%,transparent)}.xhfile-diff-cell[data-kind=removed]{background:color-mix(in srgb,#e35b62 14%,transparent)}.xhfile-diff-row[data-kind=hunk],.xhfile-diff-cell[data-kind=hunk]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.xhfile-diff-cell[data-kind=note]{color:var(--dsw-alias-label-tertiary)}.xhfile-diff-row[data-split]>.xhfile-diff-cell:first-child{border-right:1px solid var(--dsw-alias-border-l1)}.xhfile-diff-source{flex:1;min-height:0;overflow:auto;white-space:pre;margin:0;padding:12px;font:12px/22px ui-monospace,SFMono-Regular,Consolas,monospace}.xhfile-diff button:focus-visible,.xhfile-diff-scroll:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:-2px}\n\n.xhfile-toolbar{flex-wrap:wrap;padding-top:6px;padding-bottom:6px}.xhfile-toolbar button{font-size:12px;white-space:nowrap}.xhfile-toolbar button:disabled{opacity:.5;cursor:wait}.xhfile-body[data-document]{display:flex;flex-direction:column;padding:0;overflow:hidden}.xhfile-document{border:0;width:100%;flex:1;min-height:180px;background:white}.xhfile-preview-note,.xhfile-action-error{font-size:12px;line-height:1.5;padding:8px 12px;margin:0;flex:none;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-action-error{color:var(--dsw-alias-error-primary)}\n";
+exports.default = ".xhfile-pane{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);overflow:hidden}.xhfile-toolbar{display:flex;align-items:center;gap:6px;flex:none;min-height:49px;padding:0 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-secondary)}.xhfile-toolbar button,.xhfile-body button{border:0;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:inherit;padding:6px 8px;cursor:pointer}.xhfile-toolbar button:hover,.xhfile-body button:hover{background:var(--dsw-alias-interactive-bg-hover)}.xhfile-body{flex:1;min-height:0;padding:20px;overflow:auto;overflow-wrap:anywhere;--dsl-code-block-banner-position:sticky}.xhfile-body table{display:block;max-width:100%;overflow:auto}.xhfile-image{text-align:center}.xhfile-image img,.xhfile-local-image img{max-width:100%;height:auto;display:block;margin:auto}.xhfile-image small{display:block;padding:12px;color:var(--dsw-alias-label-secondary)}.xhfile-local-image{display:block;min-height:24px}.xhfile-body button.xhfile-link{display:inline;padding:0;color:var(--dsw-alias-interactive-primary);background:none;text-decoration:underline}.xhbrowser-file-form{display:flex;gap:6px;margin:12px}.xhbrowser-file-form input{flex:1;min-width:0;padding:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;color:inherit}.xhbrowser-file-form button{background:var(--dsw-alias-bg-layer-2);border:0;border-radius:6px;padding:8px;color:inherit;cursor:pointer}\n.xhfile-toolbar select{max-width:130px;background:var(--dsw-alias-bg-layer-2);color:inherit;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:5px;font:inherit;font-size:12px}.xhfile-body[data-diff]{display:flex;flex-direction:column;padding:0;overflow:hidden}.xhfile-diff{display:flex;flex-direction:column;min-height:0;height:100%;font-size:12px}.xhfile-diff-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-diff-toolbar>span:first-child{flex:1}.xhfile-diff-count{white-space:nowrap;color:var(--dsw-alias-label-secondary)}.xhfile-diff-count b{color:var(--dsw-alias-success-primary,#329c64);font-weight:500}.xhfile-diff-count i{color:var(--dsw-alias-error-primary,#d95c5c);font-style:normal}.xhfile-diff-hint{margin:0;padding:8px 12px;color:var(--dsw-alias-label-secondary);line-height:1.5}.xhfile-diff>p:not(.xhfile-diff-hint){padding:8px 12px}.xhfile-diff-files{flex:none;max-height:140px;overflow:auto;padding:4px 8px;border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-diff-files button{display:flex;width:100%;align-items:center;text-align:left;gap:8px;margin:2px 0;background:transparent}.xhfile-diff-files button[aria-current=true]{background:var(--dsw-alias-interactive-bg-hover)}.xhfile-diff-files button>span{flex:1;min-width:0;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}.xhfile-diff-files small{white-space:nowrap}.xhfile-diff-scroll{flex:1;min-height:80px;overflow:auto;overscroll-behavior:contain;overflow-anchor:none}.xhfile-diff-lines{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;width:100%}.xhfile-diff-row{height:22px;line-height:22px;white-space:pre;display:flex}.xhfile-diff-row[data-split]{display:grid;grid-template-columns:1fr 1fr}.xhfile-diff-cell{display:flex;flex:1;min-width:0}.xhfile-diff-num{display:inline-block;flex:0 0 5ch;text-align:right;padding-right:1ch;color:var(--dsw-alias-label-tertiary);user-select:none}.xhfile-diff-marker{display:inline-block;flex:0 0 2ch;user-select:none}.xhfile-diff-cell[data-kind=added]{background:color-mix(in srgb,#36ae70 14%,transparent)}.xhfile-diff-cell[data-kind=removed]{background:color-mix(in srgb,#e35b62 14%,transparent)}.xhfile-diff-row[data-kind=hunk],.xhfile-diff-cell[data-kind=hunk]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.xhfile-diff-cell[data-kind=note]{color:var(--dsw-alias-label-tertiary)}.xhfile-diff-row[data-split]>.xhfile-diff-cell:first-child{border-right:1px solid var(--dsw-alias-border-l1)}.xhfile-diff-source{flex:1;min-height:0;overflow:auto;white-space:pre;margin:0;padding:12px;font:12px/22px ui-monospace,SFMono-Regular,Consolas,monospace}.xhfile-diff button:focus-visible,.xhfile-diff-scroll:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:-2px}\n\n.xhfile-toolbar{flex-wrap:wrap;padding-top:6px;padding-bottom:6px}.xhfile-toolbar button{font-size:12px;white-space:nowrap}.xhfile-toolbar button:disabled{opacity:.5;cursor:wait}.xhfile-body[data-document]{display:flex;flex-direction:column;padding:0;overflow:hidden}.xhfile-document{border:0;width:100%;flex:1;min-height:180px;background:white}.xhfile-preview-note,.xhfile-action-error{font-size:12px;line-height:1.5;padding:8px 12px;margin:0;flex:none;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1)}.xhfile-action-error{color:var(--dsw-alias-error-primary)}\n";
 
 },
 "src/modules/browser/file-display/FilePane.js": function(module, exports, require) {
@@ -2355,110 +2332,200 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.previewPoint = previewPoint;
 exports.HeadlessPreview = HeadlessPreview;
 const React = __importStar(require("react"));
 const runtime_types_1 = require("../shared/runtime-types");
 const { createElement: h, useEffect, useRef, useState } = React;
 let previewReadInFlight = false;
-/** One request at a time. Hiding/unmounting releases preview only, never the page. */
+const MANUAL = 'desktop_headless_manual';
+function controlValue(raw) {
+    const value = (0, runtime_types_1.objectValue)(raw);
+    if (value.mode !== 'agent' && value.mode !== 'human' && value.mode !== 'switching')
+        return;
+    if (typeof value.generation !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(value.generation))
+        return;
+    return { mode: value.mode, generation: value.generation, uncertain: value.prior_effect_uncertain === true };
+}
+function previewPoint(rect, x, y) {
+    const scale = Math.min(rect.width / 1280, rect.height / 720);
+    if (!Number.isFinite(scale) || scale <= 0)
+        return;
+    const px = (x - rect.left - (rect.width - 1280 * scale) / 2) / scale;
+    const py = (y - rect.top - (rect.height - 720 * scale) / 2) / scale;
+    if (px < 0 || px >= 1280 || py < 0 || py >= 720 || !Number.isFinite(px) || !Number.isFinite(py))
+        return;
+    return { x: px, y: py };
+}
+/** The sidebar is a subscriber, not the owner. Closing it does not release the
+ * human seat, recreate the page or consume an Agent screenshot credential. */
 function HeadlessPreview(props) {
     const { item, sessionId, open } = props;
     const current = useRef(props);
     current.current = props;
     const initial = item.entries[item.position] ?? '';
     const [draft, setDraft] = useState(initial);
-    const [image, setImage] = useState('');
-    const [error, setError] = useState('');
-    const [opening, setOpening] = useState(false);
+    const [preview, setPreview] = useState();
+    const [control, setControl] = useState();
+    const [transportError, setTransportError] = useState('');
+    const [actionError, setActionError] = useState('');
+    const [working, setWorking] = useState(false);
+    const [text, setText] = useState('');
+    const writing = useRef(false), revision = useRef(0), mounted = useRef(false);
+    useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
     useEffect(() => setDraft(initial), [initial]);
     useEffect(() => {
-        if (!open || !sessionId || !item.id.startsWith('headless:')) {
-            setImage('');
+        setPreview(undefined);
+        setControl(undefined);
+        if (!open || !sessionId || !item.id.startsWith('headless:'))
             return;
-        }
         let disposed = false, timer, running = false;
+        const visible = () => !disposed && !document.hidden && current.current.open === true;
+        const schedule = (poll) => { if (visible())
+            timer = setTimeout(poll, 1000); };
         const poll = async () => {
-            if (disposed || running || document.hidden)
+            if (!visible() || running)
                 return;
-            if (previewReadInFlight) {
-                timer = setTimeout(poll, 1000);
+            if (previewReadInFlight || writing.current) {
+                schedule(poll);
                 return;
             }
             running = true;
             previewReadInFlight = true;
+            const started = revision.current;
             try {
                 const native = window.__TAURI__;
                 if (!native)
                     throw Error('后台浏览器需要桌面客户端');
                 const raw = (0, runtime_types_1.objectValue)(await native.core.invoke('desktop_headless_preview', { owner: sessionId, tabId: item.id }));
-                if (disposed)
+                if (!visible() || started !== revision.current)
                     return;
-                if (raw.busy !== true) {
-                    if (raw.tabId !== item.id || raw.mime !== 'image/jpeg' || raw.width !== 640 || raw.height !== 360 || typeof raw.image !== 'string' || raw.image.length > 2 * 1024 * 1024)
-                        throw Error('无效的浏览器预览');
-                    setImage(`data:image/jpeg;base64,${raw.image}`);
-                    setError('');
-                    if (typeof raw.url === 'string' && raw.url.length <= 4096 && raw.url !== current.current.item.entries[current.current.item.position]) {
-                        try {
-                            const url = new URL(raw.url);
-                            if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
-                                const entries = [...current.current.item.entries.slice(-49), url.href];
-                                current.current.onUpdate({ entries, position: entries.length - 1, title: typeof raw.title === 'string' ? raw.title.slice(0, 160) : url.hostname });
-                            }
+                const next = controlValue(raw.control);
+                setControl(next);
+                if (raw.busy === true) {
+                    if (next?.mode !== 'human')
+                        setPreview(value => value?.manualFrame ? { image: value.image } : value);
+                    return;
+                }
+                if (raw.tabId !== item.id || raw.mime !== 'image/jpeg' || raw.width !== 640 || raw.height !== 360 || typeof raw.image !== 'string' || raw.image.length > 2 * 1024 * 1024)
+                    throw Error('无效的浏览器预览');
+                const image = 'data:image/jpeg;base64,' + raw.image;
+                setPreview(typeof raw.manualFrame === 'string' && /^[a-f0-9]{32}$/.test(raw.manualFrame) && next?.mode === 'human' ? { image, manualFrame: raw.manualFrame } : { image });
+                setTransportError('');
+                if (typeof raw.url === 'string' && raw.url.length <= 4096 && raw.url !== current.current.item.entries[current.current.item.position]) {
+                    try {
+                        const url = new URL(raw.url);
+                        if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+                            const entries = [...current.current.item.entries.slice(-49), url.href];
+                            current.current.onUpdate({ entries, position: entries.length - 1, title: typeof raw.title === 'string' ? raw.title.slice(0, 160) : url.hostname });
                         }
-                        catch { /* Untrusted guest address is not executable UI. */ }
                     }
+                    catch { /* Untrusted guest address is not executable UI. */ }
                 }
             }
             catch (problem) {
-                if (!disposed)
-                    setError(String(problem));
+                if (visible() && started === revision.current) {
+                    setTransportError(String(problem));
+                    setControl(undefined);
+                    setPreview(undefined);
+                }
             }
             finally {
                 running = false;
                 previewReadInFlight = false;
-                if (!disposed && !document.hidden)
-                    timer = setTimeout(poll, 1000);
+                schedule(poll);
             }
         };
-        const visibility = () => { clearTimeout(timer); if (!document.hidden)
-            void poll(); };
+        const visibility = () => {
+            clearTimeout(timer);
+            ++revision.current;
+            if (document.hidden) {
+                setPreview(undefined);
+                setControl(undefined);
+            }
+            else
+                void poll();
+        };
         document.addEventListener('visibilitychange', visibility);
         void poll();
         return () => { disposed = true; clearTimeout(timer); document.removeEventListener('visibilitychange', visibility); };
     }, [item.id, sessionId, open]);
+    const invoke = async (action, args = {}) => {
+        const native = window.__TAURI__;
+        if (!native || !open || !sessionId || !control || writing.current || document.hidden)
+            return false;
+        writing.current = true;
+        ++revision.current;
+        setWorking(true);
+        setActionError('');
+        setPreview(value => value ? { image: value.image } : undefined);
+        try {
+            const raw = (0, runtime_types_1.objectValue)(await native.core.invoke(MANUAL, { owner: sessionId, tabId: item.id, arguments: { action, generation: control.generation, ...args } }));
+            if (!mounted.current)
+                return false;
+            if (action === 'takeover' || action === 'return') {
+                const next = controlValue(raw);
+                if (!next)
+                    throw Error('控制权状态未确认，请等待刷新');
+                setControl(next);
+                return true;
+            }
+            if (raw.ok !== true)
+                throw Error(typeof raw.message === 'string' ? raw.message : '操作未确认，请先检查页面');
+            return true;
+        }
+        catch (problem) {
+            if (mounted.current)
+                setActionError(String(problem));
+            return false;
+        }
+        finally {
+            writing.current = false;
+            ++revision.current;
+            if (mounted.current)
+                setWorking(false);
+        }
+    };
     const navigate = async (event) => {
         event.preventDefault();
-        if (opening || !sessionId)
+        if (control?.mode !== 'human')
+            return;
+        const value = draft.trim();
+        if (!value)
             return;
         let url;
         try {
-            url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(draft) ? draft : `${/^(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(draft) ? 'http' : 'https'}://${draft}`);
+            url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `${/^(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(value) ? 'http' : 'https'}://${value}`);
             if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
                 throw Error('invalid');
         }
         catch {
-            setError('请输入有效的 http/https 网址');
+            setActionError('请输入有效的 http/https 网址');
             return;
         }
-        const native = window.__TAURI__;
-        if (!native)
-            return;
-        setOpening(true);
-        setError('');
-        try {
-            const result = (0, runtime_types_1.objectValue)(await native.core.invoke('desktop_headless_control', { owner: sessionId, arguments: { action: 'open', url: url.href } }));
-            if (result.ok !== true)
-                throw Error('页面未打开');
-        }
-        catch (problem) {
-            setError(String(problem));
-        }
-        finally {
-            setOpening(false);
-        }
+        await invoke('navigate', { url: url.href });
     };
-    return h('section', { className: 'xhbrowser-pane', 'aria-label': '后台浏览器预览', 'data-headless-preview': true }, h('form', { className: 'xhbrowser-toolbar', onSubmit: navigate }, h('input', { className: 'xhbrowser-headless-address', 'aria-label': '后台浏览器网址', value: draft, onChange: (e) => setDraft(e.currentTarget.value), placeholder: '输入网址' }), h('button', { type: 'submit', disabled: opening || !sessionId }, opening ? '打开中…' : '打开'), h('button', { type: 'button', onClick: () => current.current.onClose(), 'aria-label': '关闭当前后台网页' }, '×')), error && h('p', { className: 'xhbrowser-error', role: 'alert' }, error), h('div', { className: 'xhbrowser-headless-canvas' }, image ? h('img', { src: image, alt: '当前后台浏览器页面预览，收起侧栏不会停止任务', draggable: false }) : h('p', null, item.id.startsWith('headless:') ? '等待页面预览…' : '使用本机 Chrome／Edge，独立后台会话')), h('footer', { className: 'xhbrowser-headless-footer' }, '预览 · 收起后 AI 仍可操作', props.onNative && h('button', { type: 'button', onClick: props.onNative }, '使用原生 WebView')));
+    const human = control?.mode === 'human';
+    const frame = human && !working ? preview?.manualFrame : undefined;
+    const click = (event) => {
+        if (!frame)
+            return;
+        const point = previewPoint(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
+        if (point)
+            void invoke('click', { frame_id: frame, ...point });
+    };
+    const sendText = async (event) => {
+        event.preventDefault();
+        if (!frame || !text)
+            return;
+        if (await invoke('text', { frame_id: frame, text }))
+            setText('');
+    };
+    const status = working || control?.mode === 'switching' ? '正在切换或操作…' : human ? '人工控制 · Agent 不可操作网页' : control?.mode === 'agent' ? 'Agent 控制 · 只读预览' : '后台浏览器 · 等待状态';
+    return h('section', { className: 'xhbrowser-pane', 'aria-label': '后台浏览器预览', 'data-headless-preview': true }, h('form', { className: 'xhbrowser-toolbar', onSubmit: navigate }, h('input', { className: 'xhbrowser-headless-address', 'aria-label': '后台浏览器网址', value: draft, readOnly: !human, onChange: (e) => setDraft(e.currentTarget.value), placeholder: '输入网址' }), human && h('button', { type: 'submit', disabled: working }, '打开'), h('button', { type: 'button', onClick: () => current.current.onClose(), 'aria-label': '关闭当前后台网页' }, '×')), (actionError || transportError) && h('p', { className: 'xhbrowser-error', role: 'alert' }, actionError || transportError), control?.uncertain && h('p', { className: 'xhbrowser-headless-note', role: 'status' }, '上一次操作结果不确定；请先检查页面，不要重复提交。'), h('div', { className: 'xhbrowser-headless-canvas' }, open && preview ? h('img', {
+        src: preview.image, alt: '当前后台浏览器画面', draggable: false, onClick: click, 'data-manual-click': Boolean(frame) || undefined,
+    }) : h('p', null, '等待页面预览…')), human && h('form', { className: 'xhbrowser-headless-input', onSubmit: sendText }, h('input', { 'aria-label': '向网页输入文字', placeholder: '先点击网页中的输入框', value: text, maxLength: 1000, onChange: (e) => setText(e.currentTarget.value) }), h('button', { type: 'submit', disabled: !frame || !text }, '输入'), h('button', { type: 'button', disabled: !frame, onClick: () => { if (frame)
+            void invoke('key', { frame_id: frame, key: 'Enter' }); } }, 'Enter')), h('footer', { className: 'xhbrowser-headless-footer' }, h('span', { role: 'status' }, status), control && (control.mode === 'human' || control.mode === 'agent') && h('button', { type: 'button', disabled: working, onClick: () => { void invoke(human ? 'return' : 'takeover'); } }, human ? '交还 Agent' : '接管'), h('span', null, human ? '收起后仍由你控制' : '收起不停止任务')));
 }
 
 }

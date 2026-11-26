@@ -236,7 +236,7 @@ jobs:
           cache-on-failure: true
           shared-key: desktop-native-${{ matrix.target }}
           # Salt only public compile-time configuration, never signing secrets.
-          env-vars: CARGO CC CFLAGS CXX CMAKE RUST XHARNESS_ACCOUNT_ORIGIN XHARNESS_INSTALLATION_ENDPOINT XHARNESS_RELEASE_CHANNEL
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST XHARNESS_INSTALLATION_ENDPOINT XHARNESS_RELEASE_CHANNEL
           workspaces: |
             . -> target
             apps/desktop/src-tauri -> target

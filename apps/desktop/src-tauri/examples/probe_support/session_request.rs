@@ -334,7 +334,28 @@ pub async fn run(app: &tauri::AppHandle) -> Result<(), String> {
     if fixture.calls.load(Ordering::SeqCst) != before {
         return Err("cached response read replayed HTTP".into());
     }
+    if grant(app, "other-owner", origin, true).await.is_ok() {
+        return Err("implicit ownership transfer accepted".into());
+    }
+    browser_delegation::desktop_browser_delegate(
+        main.clone(),
+        app.state(),
+        "request-probe".into(),
+        None,
+        false,
+        None,
+    )
+    .await?;
     grant(app, "other-owner", origin, true).await?;
+    browser_delegation::desktop_browser_delegate(
+        main.clone(),
+        app.state(),
+        "request-probe".into(),
+        None,
+        false,
+        None,
+    )
+    .await?;
     grant(app, owner, origin, true).await?;
     if call(
         connection,
@@ -412,13 +433,33 @@ pub async fn run(app: &tauri::AppHandle) -> Result<(), String> {
     };
     let (reply, hidden) = tokio::join!(pending, hide);
     hidden?;
-    if reply?["ok"] != false {
-        return Err("response delivered after native browser hide".into());
+    if reply?["result"]["status"] != 200 {
+        return Err("sidebar hide interrupted an owned HTTP request".into());
     }
-    browser::desktop_browser_close(main, app.state(), "request-probe".into()).await?;
+    let before = fixture.slow.load(Ordering::SeqCst);
+    let pending = call(
+        connection,
+        owner,
+        "request",
+        json!({"url":format!("{origin}/slow")}),
+    );
+    let close = async {
+        readiness::wait(
+            Duration::from_secs(3),
+            Duration::from_millis(10),
+            || async { Ok(fixture.slow.load(Ordering::SeqCst) > before) },
+        )
+        .await?;
+        browser::desktop_browser_close(main, app.state(), "request-probe".into()).await
+    };
+    let (reply, closed) = tokio::join!(pending, close);
+    closed?;
+    if reply?["ok"] != false {
+        return Err("closed browser delivered a stale HTTP result".into());
+    }
     println!(
         "BROWSER_SESSION_REQUEST_EVIDENCE {}",
-        json!({"passed":true,"http_only_reused":true,"cookie_values_exported":false,"path_scope":true,"same_origin_only":true,"redirect_not_followed":true,"read_only_write_denied":true,"write_attempts":fixture.writes.load(Ordering::SeqCst),"bounded_preview":true,"repeatable_json_read_without_http":true,"owner_switch_revokes_cache":true,"rotation_and_logout":true,"hide_cancels_delivery":true,"test_only":true,"model_started":false,"all_request_count":fixture.calls.load(Ordering::SeqCst),"all_requests":fixture.traffic.lock().unwrap().clone()})
+        json!({"passed":true,"http_only_reused":true,"cookie_values_exported":false,"path_scope":true,"same_origin_only":true,"redirect_not_followed":true,"read_only_write_denied":true,"write_attempts":fixture.writes.load(Ordering::SeqCst),"bounded_preview":true,"repeatable_json_read_without_http":true,"owner_switch_revokes_cache":true,"rotation_and_logout":true,"hide_preserves_delivery":true,"close_cancels_delivery":true,"implicit_owner_transfer_denied":true,"test_only":true,"model_started":false,"all_request_count":fixture.calls.load(Ordering::SeqCst),"all_requests":fixture.traffic.lock().unwrap().clone()})
     );
     Ok(())
 }

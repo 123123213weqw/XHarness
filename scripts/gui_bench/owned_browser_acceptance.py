@@ -62,6 +62,16 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--cycles',type=int,default=100,choices=range(2,201))
     args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
+    # This runner is already scheduled on all desktop CI platforms. Require
+    # the real-engine takeover receipt rather than a helper's zero exit alone.
+    with (args.output/'takeover.log').open('w+', encoding='utf-8') as log:
+        result=subprocess.run([str(args.binary.resolve()), '--takeover-acceptance'],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, timeout=95)
+        log.seek(0)
+        evidence=log.read()
+        print(evidence, end='', flush=True)
+        if result.returncode != 0 or 'TAKEOVER_ENGINE_EVIDENCE:' not in evidence:
+            raise AssertionError('real browser takeover probe failed')
     fixture=Fixture();responses=queue.Queue();seq=0
     log=(args.output/'worker.log').open('w')
     process=subprocess.Popen([str(args.binary.resolve())],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log,text=True)
@@ -78,7 +88,7 @@ def main():
         transcript.write(json.dumps({'op':op,'arguments':arguments or {},'owner':owner,'reply':compact(reply)})+'\n');transcript.flush()
         if not allow_error:assert reply['ok'],reply
         return reply['result'] if reply['ok'] else reply
-    proofs=[];cases=[];passed=False
+    proofs=[];cases=["real browser exclusive takeover and fresh observation after return"];passed=False
     def owned_children():
         children=[];profiles=set()
         for child in psutil.Process(process.pid).children(recursive=True):

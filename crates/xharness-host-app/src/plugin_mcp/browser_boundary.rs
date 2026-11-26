@@ -6,6 +6,7 @@ use xharness_plugins::PluginManager;
 
 pub(super) const HEADLESS_PLUGIN: &str = "browser-use";
 pub(super) const HEADLESS_SERVER: &str = "browser";
+pub(super) const CONTAINER_CONFIG: &str = "XHARNESS_BROWSER_CONTAINER_CONFIG";
 pub(super) const EXTENSION_PLUGIN: &str = "browser-extension";
 
 pub(super) const GUIDANCE: &str = " Browser boundary: When discovery offers native-browser/browser, prefer that chat-owned background browser for new website tasks; its sidebar is only a preview and may stay collapsed. Use native-browser/webview explicitly for an existing WebView page/login or manual participation. An explicitly enabled browser-use/browser is an isolated headless background backend for independent public-page tasks without an existing login session; it does not display or inherit the WebView's page or login state. Choose by the user's task, not by inspecting cookies. Explicit plugin/server and issued tab/frame refs identify the session; never mix references, transfer cookies/profiles, or silently switch browser backends after failure. If login, CAPTCHA or user participation is required, explain and ask before a fresh visible-browser handoff; do not replay a previous action. An explicitly enabled browser-extension/browser controls only user-authorized Chrome/Edge tabs, including background tabs, using its own session and references. The Host binds the conversation automatically; call status to check connection and tabs. The user authorizes a tab/site once in the extension; no manual pairing code. Never infer that connection, tool approval or full access authorizes another tab or origin. Discovery is configuration/capability information, not authorization or proof that a page is ready.";
@@ -25,19 +26,24 @@ pub(super) fn embedded_capability() -> Value {
 /// starting an MCP process. A registered plugin is not a ready browser and its
 /// name is not a security attestation of the installed package's behavior.
 pub(super) async fn headless_capability(manager: &PluginManager) -> Option<Value> {
-    manager
+    let spec = manager
         .mcp_server(HEADLESS_PLUGIN, HEADLESS_SERVER)
         .await
         .ok()?;
+    let container = spec.env.contains_key(CONTAINER_CONFIG);
     Some(json!({
         "plugin":HEADLESS_PLUGIN,
         "server":HEADLESS_SERVER,
-        "backend":"headless",
+        "backend":if container { "container" } else { "headless" },
         "visibility":"background",
         "session":"chat-owned-MCP-context",
         "availability":"configured",
         "readiness":"not-probed",
-        "description":"Opt-in browser-use backend for independent public-page tasks. Separate from the visible WebView; no inherited WebView login. Describe its browser tool before use."
+        "description":if container {
+            "Opt-in remote container browser for operator-approved sites. Starts on first use; isolated per chat, no inherited login, no file bridge or live control, idle state is discarded. Describe browser before use."
+        } else {
+            "Opt-in browser-use backend for independent public-page tasks. Separate from the visible WebView; no inherited WebView login. Describe its browser tool before use."
+        }
     }))
 }
 
