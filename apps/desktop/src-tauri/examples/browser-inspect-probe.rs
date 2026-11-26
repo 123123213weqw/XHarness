@@ -110,6 +110,27 @@ async fn evidence(guest: &tauri::Webview, expression: &str) -> Result<Value, Str
     browser_inspect::decode_callback(&raw)
 }
 
+/// Pure read of page state. Until a WebView's first navigation commits, the
+/// platform backend queues scripts and drops their callback, which surfaces as
+/// "native callback unavailable"; a slow runner can still be inside that
+/// window. Only reads wait for it. A queued effect still runs at commit, so
+/// `evidence` must never be retried.
+async fn sample(guest: &tauri::Webview, expression: &str) -> Result<Value, String> {
+    let started = std::time::Instant::now();
+    loop {
+        match browser_inspect::evaluate(guest, format!("JSON.stringify({expression})")).await {
+            Ok(raw) => return browser_inspect::decode_callback(&raw),
+            Err(error)
+                if error == "native callback unavailable"
+                    && started.elapsed() < Duration::from_secs(10) =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn assert_activity_pairs(events: &[Value], owner: &str, tab: &str) -> Result<(), String> {
     let mut active = std::collections::HashMap::new();
     if events.len() < 2 {
@@ -1053,12 +1074,12 @@ async fn probe(app: &tauri::AppHandle, url: String) -> Result<(), String> {
     let (guest, _) = app
         .state::<browser::BrowserState>()
         .inspection_target("probe")?;
-    let identity = evidence(
+    let identity = sample(
         &guest,
         "({http:window.probeHttpUserAgent,js:navigator.userAgent})",
     )
     .await?;
-    let native = evidence(&main, "navigator.userAgent").await?;
+    let native = sample(&main, "navigator.userAgent").await?;
     println!(
         "USER_AGENT_EVIDENCE {}",
         json!({"main":native,"guest":identity,"first_request_matches_js":identity["http"].is_string() && identity["http"] == identity["js"],"test_only":true})

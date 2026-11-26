@@ -357,16 +357,23 @@ mod tests {
     struct Dir(PathBuf);
     impl Dir {
         fn new() -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "xh-host-checkpoint-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir(&p).unwrap();
-            Self(p)
+            // Parallel tests can read the same clock tick. Take the first free
+            // name instead of racing two directories onto one path.
+            loop {
+                let p = std::env::temp_dir().join(format!(
+                    "xh-host-checkpoint-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ));
+                match std::fs::create_dir(&p) {
+                    Ok(()) => return Self(p),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("checkpoint fixture directory: {error}"),
+                }
+            }
         }
         fn store(&self) -> Arc<ProbeStore> {
             Arc::new(ProbeStore {

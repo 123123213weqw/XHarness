@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "kind": "bugfix",
+  "reason": "A just-finalized checkpoint artifact can stay unreadable for a moment, so the single gh run download attempt failed the hosted checkpoint rehearsal on master twice with nothing wrong to dispatch, upload or publish.",
+  "compatibility": "Only the artifact download, a pure read, is repeated: five attempts with bounded backoff, each from an empty directory. Checkpoint naming, revision selection, the exact task.json content and size checks and every dispatch, upload and publish path are unchanged. A persistent download failure still raises TransportError with the rerun-the-same-coordinator guidance, and CLI text is still never persisted.",
+  "paths": {
+    "scripts/desktop-release-service.py": {
+      "before": "21552dc919ad278582a43b3c0802f73bbfeb96ff862d1a56fcc6777aae02f5a2",
+      "after": "c5864304a8baff1b6b9df77d5da821863621de378c63175c0909dd48a4f1bf2e"
+    }
+  },
+  "regressions": [
+    "updater",
+    "windows"
+  ]
+}
