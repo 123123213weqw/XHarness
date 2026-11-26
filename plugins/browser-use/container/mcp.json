@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "browser": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/container/launcher.mjs"],
+      "env": {
+        "XHARNESS_BROWSER_CONTAINER_CONFIG": "${XHARNESS_BROWSER_CONTAINER_CONFIG}"
+      }
+    }
+  }
+}

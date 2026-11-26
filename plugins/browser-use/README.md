@@ -9,6 +9,9 @@ registry, approvals, cancellation and per-chat process lifetime. It does **not**
 attach to the embedded Tauri WebView, user Chrome profile, cookies or desktop.
 Removing/disabling this plugin does not change ordinary chats.
 
+For a dedicated Linux Host, see [the opt-in container variant](container/README.md).
+The default Browser Use installation is unchanged.
+
 ## Build and configure
 
 Inside `plugins/browser-use`, use Node 20+ and run:

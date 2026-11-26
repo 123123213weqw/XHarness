@@ -31,6 +31,9 @@ fn main() {
             "tools/call" => {
                 let value = input["params"]["arguments"]["text"].as_str().unwrap_or("");
                 if value == "sleep" {
+                    if let Some(path) = std::env::var_os("XH_MCP_FIXTURE_DISPATCH_MARKER") {
+                        std::fs::write(path, b"dispatched").expect("write dispatch marker");
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(10));
                 }
                 let text = if value == "__pid" {

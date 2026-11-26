@@ -226,6 +226,83 @@ async fn disconnect_owner_does_not_interrupt_other_chats() {
 }
 
 #[tokio::test]
+async fn disposable_call_cancellation_closes_only_the_dispatched_connection() {
+    let runtime = McpRuntime::new();
+    let marker = std::env::temp_dir().join(format!(
+        "xharness-mcp-dispatch-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut config = fixture();
+    config.env.insert(
+        "XH_MCP_FIXTURE_DISPATCH_MARKER".into(),
+        marker.to_str().unwrap().into(),
+    );
+    let a = fixture_pid(&runtime, "a", &config).await;
+    let b = fixture_pid(&runtime, "b", &config).await;
+    let lease = runtime.lease(&config.plugin).await;
+    let stop = CancellationToken::new();
+    let active = {
+        let run = runtime.clone();
+        let cfg = config.clone();
+        let lease = lease.clone();
+        let token = stop.clone();
+        tokio::spawn(async move {
+            run.call_disposable_tool_with_lease(
+                "a",
+                &cfg,
+                "echo",
+                Map::from_iter([("text".into(), json!("sleep"))]),
+                &lease,
+                &token,
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !marker.is_file() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the disposable call was not dispatched");
+    std::fs::remove_file(&marker).unwrap();
+
+    let queued_stop = CancellationToken::new();
+    let queued = runtime.call_disposable_tool_with_lease(
+        "a",
+        &config,
+        "echo",
+        Map::new(),
+        &lease,
+        &queued_stop,
+    );
+    tokio::pin!(queued);
+    tokio::select! {
+        _ = &mut queued => panic!("queued call should not acquire the active connection"),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {},
+    }
+    queued_stop.cancel();
+    assert!(matches!(
+        queued.await,
+        Err(McpError::CancelledBeforeDispatch)
+    ));
+    assert!(!active.is_finished());
+    stop.cancel();
+    assert!(matches!(
+        active.await.unwrap(),
+        Err(McpError::CancelledAfterDispatch)
+    ));
+    assert!(!lease.is_cancelled(), "the plugin-wide lease must survive");
+    assert_eq!(b, fixture_pid(&runtime, "b", &config).await);
+    assert_ne!(a, fixture_pid(&runtime, "a", &config).await);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn panel_replies_are_parallel_hidden_and_pinned_until_explicit_close() {
     let runtime = McpRuntime::new();
     let mut config = fixture();
