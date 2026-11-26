@@ -126,15 +126,16 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
 
   return (
     <>
-      {renderSlot('settings.account-entry', { wide, rows, openSection }, { fallback: <button
+      <button
         type="button"
         className={clsx(css.trigger, !wide && css.rail)}
+        data-xh-settings-trigger=""
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => { setOpen(true) }}
+        onClick={event => { event.currentTarget.focus(); setOpen(true) }}
       >
         {renderSlot('settings.trigger', { wide })}
-      </button> })}
+      </button>
       {open && (
         <SettingsPanel
           rows={rows}

@@ -35,13 +35,6 @@
   "plugins": {
     "updater": {
       "pubkey": ""
-    },
-    "deep-link": {
-      "desktop": {
-        "schemes": [
-          "com.xlang.xharness"
-        ]
-      }
     }
   },
   "bundle": {

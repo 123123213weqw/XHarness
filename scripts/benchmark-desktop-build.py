@@ -46,7 +46,7 @@ def measure(target, phase, mode, cache_hit, output):
               'locks': {str(p): hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
                         for p in ['Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml']},
               'publicBuildConfig': {k: os.environ.get(k, '') for k in ('XHARNESS_RELEASE_CHANNEL',
-                  'XHARNESS_INSTALLATION_ENDPOINT', 'XHARNESS_ACCOUNT_ORIGIN', 'CARGO_PROFILE_RELEASE_DEBUG',
+                  'XHARNESS_INSTALLATION_ENDPOINT', 'CARGO_PROFILE_RELEASE_DEBUG',
                   'CARGO_PROFILE_RELEASE_STRIP', 'ZSTD_CLEVEL')}, 'steps': [], 'status': 'running'}
     started = time.monotonic()
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -32,10 +32,10 @@ test('published ABI, exact CSS and no removed onboarding slot',async()=>{
  const old=harness(oldSource),next=harness(current);assert.deepEqual(Object.keys(next.plugin).sort(),Object.keys(old.plugin).sort());assert.deepEqual(json(next.plugin.inject),json(old.plugin.inject));assert.deepEqual(json(next.styles),json(old.styles));
  const receipts=[];for(const{plugin}of[old,next]){const slots=[],dicts=[],events=[],cleanup=[];const scope={getSnapshot:()=>({status:'ready',value:{accepted:false},writable:true}),subscribe:()=>()=>{},set:async()=>{}};
  const ctx={effect:fn=>{const result=fn();if(typeof result==="function")cleanup.push(result)},locale:{register:(...v)=>dicts.push(v),bind:()=>k=>k},get:()=>({api:{credentials:{describe:async()=>ok({credentials:{}})}}}),settingsSchema:schema,settingsScope:{describe:()=>mirror(),bind:()=>scope},remote:{$on:(n)=>{events.push(n);return()=>{}}},on:n=>{events.push(n);return()=>{}},slots:{inject:(_n,fn)=>fn(),register:(spec,component)=>slots.push({spec,component})}};
- plugin.apply(ctx);const managed=slots.find(row=>row.spec.id==='managed-account');if(plugin===next.plugin)assert.ok(managed,'new managed service section registered');const original=slots.filter(row=>row.spec.id!=='managed-account');dicts.splice(0,dicts.length,...dicts.filter(row=>row[0]!=='xharness-managed-account'));slots.splice(0,slots.length,...original);assert.equal(slots.length,1);assert.equal(slots[0].spec.name,'settings.section');cleanup.forEach(fn=>fn());receipts.push({inject:json(plugin.inject),dicts:json(dicts),events,slot:{...slots[0].spec,inject:undefined,label:slots[0].spec.label()}});}
+ plugin.apply(ctx);assert.equal(slots.length,1);assert.equal(slots[0].spec.name,'settings.section');assert.equal(slots[0].spec.id,'models');cleanup.forEach(fn=>fn());receipts.push({inject:json(plugin.inject),dicts:json(dicts),events,slot:{...slots[0].spec,inject:undefined,label:slots[0].spec.label()}});}
  for (const lang of ['zh','en']) {
   const next=receipts[1].dicts[0][1][lang], before=receipts[0].dicts[0][1][lang];
-  assert.deepEqual(Object.keys(next).filter(key => !(key in before)).sort(), ['accountReadOnly','accountTag','modelOutputBudgetInvalid','reasoningRecipe','reasoningKeep','reasoningEnableThinking','reasoningThinking','reasoningNativeEffort','reasoningDisabled','reasoningRecipeHint','reasoningApply'].sort());
+  assert.deepEqual(Object.keys(next).filter(key => !(key in before)).sort(), ['modelOutputBudgetInvalid','reasoningRecipe','reasoningKeep','reasoningEnableThinking','reasoningThinking','reasoningNativeEffort','reasoningDisabled','reasoningRecipeHint','reasoningApply'].sort());
   for(const key of Object.keys(before)) assert.equal(next[key],before[key]);
  }
  assert.deepEqual({...receipts[1],dicts:undefined},{...receipts[0],dicts:undefined});
@@ -75,27 +75,6 @@ test('profile removal respects credential-first idempotent retry and settings fa
 
 test('discovered image capability preserves true/false/unknown without guessing or rewriting fields',()=>{
  for(const imageInput of [undefined,true,false,'yes',null]){const candidate={id:'vision',name:'Vision',contextWindow:8192,maxTokens:2048,reasoning:{efforts:[{id:'high'}]},imageInput};const rows=apis.map(({plugin})=>json(plugin.adopt(candidate)));assert.deepEqual(rows[1],rows[0]);assert.equal(rows[1].imageInput,typeof imageInput==='boolean'?imageInput:undefined);assert.deepEqual(rows[1].reasoning,candidate.reasoning);}
-});
-
-// The managed account seam reuses Host CAS writes and credential/keyring storage.
-test('managed credentials never overwrite unrelated provider and stop on CAS failure',async()=>{
- const save=apis[1].plugin.saveManagedAccess;const calls=[];const access={status:'authorized',accessToken:'private-fixture',baseURL:'https://engine.xxdevs.com/api/inference/v1',models:[{id:'fixture',contextWindow:1000,maxTokens:100}]};
- const ns=json(namespace);const describe=mirror({namespaces:[ns],writable:true,hasDocument:true});describe.acceptView=()=>{};
- const api={settings:{mutate:async p=>{calls.push(p);return ok(ns)}},credentials:{set:async p=>{calls.push(p);return ok({})}}};
- await save(api,describe,access);assert.deepEqual(json(calls[0].ops[0].path),['providers','xharness-managed']);assert.equal(calls[0].expectedRevision,7);assert.equal(calls[1].ref,'XHARNESS_MANAGED_API_TOKEN');assert.equal(calls[1].value,access.accessToken);
- ns.value.providers['xharness-managed']={api:'openai-completions',apiKeyEnv:'OWN_KEY',baseURL:access.baseURL};calls.length=0;await assert.rejects(()=>save(api,describe,access));assert.equal(calls.length,0);
- delete ns.value.providers['xharness-managed'];api.settings.mutate=async()=>bad('conflict');await assert.rejects(()=>save(api,describe,access));assert.equal(calls.length,0);
-});
-
-test('account profile cannot be deleted from generic model management; same route in another namespace remains custom', async()=>{
- const calls=[];
- const api={credentials:{unset:async()=>{calls.push('credential');return ok({})}},settings:{mutate:async()=>{calls.push('settings');return ok({})}}};
- const controller={load:async()=>{calls.push('load')}};
- const target={settingsNs:'llm-pi-ai',settingsPath:['providers','xharness-managed'],credentialRef:'XHARNESS_MANAGED_API_TOKEN'};
- assert.match(await apis[1].plugin.removeProviderProfile(api,controller,target),/Account service/);
- assert.deepEqual(calls,[]);
- assert.equal(await apis[1].plugin.removeProviderProfile(api,controller,{...target,settingsNs:'custom-ns'}),undefined);
- assert.deepEqual(calls,['credential','settings','load']);
 });
 
 test('local reasoning recipes are explicit, isolated, and match checked-in deployment examples',()=>{
