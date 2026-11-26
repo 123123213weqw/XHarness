@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +19,9 @@ spec = importlib.util.spec_from_file_location('release_task', ROOT / 'scripts/re
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 WORKFLOW = 'desktop-release-service.yml'
+# The checkpoint is one small task.json. A read that cannot finish in this
+# budget is abandoned and repeated, bounded well inside the rehearsal job.
+DOWNLOAD_ATTEMPTS, DOWNLOAD_TIMEOUT, DOWNLOAD_BACKOFF = 5, 45, 5
 
 
 def require(condition, message):
@@ -138,22 +142,33 @@ def select_checkpoint(rows, prefix, sha):
     return latest
 
 
-def restore(client, root, version, run_id, sha):
-    return restore_checkpoint(client, root, artifact_prefix(version, run_id), run_id, sha)
+def restore(client, root, version, run_id, sha, sleep=time.sleep):
+    return restore_checkpoint(client, root, artifact_prefix(version, run_id), run_id, sha, sleep)
 
 
-def restore_checkpoint(client, root, prefix, run_id, sha):
+def restore_checkpoint(client, root, prefix, run_id, sha, sleep=time.sleep):
     row = select_checkpoint(client.pages(f'actions/runs/{run_id}/artifacts?per_page=100', 'artifacts'), prefix, sha)
     if row is None:
         # A rerun without evidence may have lost a dispatch intent: fail closed.
         require(os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'No checkpoint for a rerun; inspect remote runs, do not redispatch')
         return None
     destination = root / 'restore'
-    try:
-        subprocess.run(['gh', 'run', 'download', run_id, '--repo', client.repo, '--name', row['name'], '--dir', str(destination)],
-                       check=True, timeout=180, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    except (subprocess.SubprocessError, OSError) as error:
-        raise release.TransportError('Checkpoint download failed; rerun this same coordinator') from error
+    # A just-finalized artifact can stay unreadable for a moment and the blob
+    # service answers transiently. The download is a pure read, so only it is
+    # repeated; nothing here dispatches, uploads or publishes a second time.
+    # Each attempt starts from an empty directory: an interrupted download must
+    # not leave files that the exact-content check below would have to trust.
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        shutil.rmtree(destination, ignore_errors=True)
+        try:
+            subprocess.run(['gh', 'run', 'download', run_id, '--repo', client.repo, '--name', row['name'], '--dir', str(destination)],
+                           check=True, timeout=DOWNLOAD_TIMEOUT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            break
+        except (subprocess.SubprocessError, OSError) as error:
+            if attempt == DOWNLOAD_ATTEMPTS:
+                # CLI text can echo names, queries or credentials; report the class only.
+                raise release.TransportError(f'Checkpoint download failed after {attempt} attempts ({type(error).__name__}); rerun this same coordinator') from error
+            sleep(DOWNLOAD_BACKOFF * attempt)
     require({p.name for p in destination.iterdir()} == {'task.json'}, 'Unexpected checkpoint files')
     path = destination / 'task.json'
     require(path.is_file() and not path.is_symlink() and path.stat().st_size < 1024 * 1024, 'Unsafe checkpoint')
