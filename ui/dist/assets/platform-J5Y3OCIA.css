@@ -1399,7 +1399,7 @@ body[data-ds-dark-theme] .JsonTree_root {
   margin-bottom: 11px;
 }
 .CodeBlock_bannerWrap {
-  position: sticky;
+  position: var(--dsl-code-block-banner-position, static);
   top: 0;
   z-index: 6;
   background-color: var(--dsw-alias-bg-base);
@@ -3002,4 +3002,4 @@ select,
 textarea {
   font-family: inherit;
 }
-/*# sourceMappingURL=platform-Z3C7WZKU.css.map */
+/*# sourceMappingURL=platform-J5Y3OCIA.css.map */

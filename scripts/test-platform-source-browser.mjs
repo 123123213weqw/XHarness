@@ -132,6 +132,23 @@ for(const engine of engines){
    const brand=await page.evaluate(()=>({svg:[...document.querySelectorAll('#root svg')].map(el=>({viewBox:el.getAttribute('viewBox'),width:el.getAttribute('width'),height:el.getAttribute('height'),paths:[...el.querySelectorAll('path')].map(p=>[p.getAttribute('d'),p.getAttribute('fill-opacity')]),text:el.textContent})),code:normalize(document.querySelector('.md-code-block pre'))}))
    assert.equal(brand.svg[0].viewBox,'0 0 64 64');assert.equal(brand.svg[0].paths.length,2)
    assert.ok(requests.some(path=>/python/.test(path)),'actual dynamic Shiki grammar request')
+   // The language/copy banner flows with its code unless the owner of the
+   // nearest scroll container opts in. In page flow a sticky banner would
+   // slide over the very lines it belongs to. The frozen reference predates
+   // this and keeps its always-sticky banner, which proves the two
+   // implementations really load different stylesheets.
+   const banner=selector=>page.evaluate(s=>{const block=document.querySelector(s),el=block&&block.firstElementChild;return{position:el&&getComputedStyle(el).position,className:el&&el.className,blocks:document.querySelectorAll('.md-code-block').length}},selector)
+   const pageFlow=await banner('.md-code-block')
+   assert.equal(pageFlow.blocks,1,'one code block is mounted')
+   assert.equal(pageFlow.position,implementation==='source'?'static':'sticky','page-flow banner follows the loaded stylesheet: '+JSON.stringify(pageFlow))
+   await page.evaluate(()=>{
+    const R=staticModules.react,D=staticModules['react-dom'],P=staticModules['@xharness/dsh-client-ui-primitives']
+    D.flushSync(()=>mount.render(R.createElement('div',{id:'owner',style:{maxHeight:'96px',overflow:'auto','--dsl-code-block-banner-position':'sticky'}},R.createElement(P.CodeBlock,{code:'const a = 1\n'.repeat(12),lang:'typescript'}))))
+   })
+   await page.waitForFunction(()=>document.querySelector('#owner .md-code-block .shiki'))
+   assert.equal((await banner('#owner .md-code-block')).position,'sticky','a scroll-container owner keeps the banner on its own scroll container')
+   const owned=await page.evaluate(()=>{const owner=document.getElementById('owner'),el=owner.querySelector('.md-code-block').firstElementChild;owner.scrollTop=140;return{scrolled:owner.scrollTop,offset:el.getBoundingClientRect().top-owner.getBoundingClientRect().top}})
+   assert.ok(owned.scrolled>0&&Math.abs(owned.offset)<1,'opted-in banner stays on its own scroll container: '+JSON.stringify(owned))
    const shiki=[]
    for(const [lang,code] of [
     ['typescript','export async function main<T>(x: T) { return await Promise.resolve(x) }'],

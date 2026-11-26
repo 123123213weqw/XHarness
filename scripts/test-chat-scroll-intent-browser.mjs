@@ -138,6 +138,28 @@ try {
   if (output) await page.screenshot({ path: join(output, `${engine}-tiny-up.png`) })
   assert.ok(Math.abs((await geometry()).top - tinyTop) < 2, '4px upward reader scroll must not be pulled down by streamed height growth')
   assert.equal(await jump.count(), 1, 'Any upward intent relinquishes bottom-follow')
+  // The floating button belongs beside the reading column. This standalone
+  // mount defines no side clearance, so the button keeps its slot-edge
+  // position. Under ConversationRoot's variables it takes the reading column's
+  // margin, or the scroll area's side padding when there is none, instead of
+  // covering the ends of text lines.
+  const beside = () => page.evaluate(() => { const box = e => { const b = e.getBoundingClientRect(); return { x: Math.round(b.x), right: Math.round(b.right), width: Math.round(b.width) } }
+    const button = document.querySelector('button[aria-label="Back to bottom"]'), scroller = document.querySelector('[data-conversation-scroll]')
+    return { scroll: box(scroller), column: box(document.querySelector('[data-chat-flow-key]').parentElement), button: box(button), slot: box(button.parentElement) } })
+  const standalone = await beside()
+  assert.ok(Math.abs(standalone.button.right - standalone.slot.right) <= 1 && standalone.button.x >= standalone.column.right - 12, 'without side clearance the button stays on its slot edge: ' + JSON.stringify(standalone))
+  const variables = await page.addStyleTag({ content: ':root{--dsh-composer-side-clearance:16px}' })
+  await settledGeometry()
+  const padded = await beside()
+  assert.ok(padded.button.x >= padded.column.right - 2 && padded.button.right <= padded.scroll.x + padded.scroll.width, 'side padding holds the button clear of the reading column: ' + JSON.stringify(padded))
+  await variables.evaluate(el => { el.textContent = ':root{--dsh-composer-side-clearance:16px;--dsh-chat-content-width:680px}' })
+  await settledGeometry()
+  const margined = await beside()
+  assert.equal(margined.column.width, 680, 'the root content width narrows the reading column')
+  assert.ok(margined.button.x >= margined.column.right + 11 && margined.button.right <= margined.scroll.x + margined.scroll.width, 'a reading-column margin holds the button clear of text: ' + JSON.stringify(margined))
+  await variables.evaluate(el => el.remove())
+  await settledGeometry()
+  assert.ok(Math.abs((await beside()).button.right - standalone.slot.right) <= 1, 'the standalone layout is restored')
   // A native anchor correction may move down within the attribution window.
   // It must not be mistaken for a new downward gesture by the reader.
   const adjustedTop = await scroll.evaluate(e => { e.scrollTop = e.scrollHeight; e.dispatchEvent(new Event('scroll')); return e.scrollTop })
