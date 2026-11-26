@@ -49,7 +49,7 @@ function baselineAgentFailureStyle(source) {
  source=stripTurnStyle(source,'chat',false);
  assert.ok(source.endsWith(agentFailureStyle),'reviewed agent failure notice must remain an exact append-only delta');
  const baseline=source.slice(0,-agentFailureStyle.length);
- assert.equal(createHash('sha256').update(baseline).digest('hex'),'ea56a6c3f52b53edd7d339e8d5c97a9c1a76fe032832c509bef447b84b164647','unrelated ChatView styles must retain their reviewed bytes');
+ assert.equal(createHash('sha256').update(baseline).digest('hex'),'bb932c6acad33381f451b56fd017327ad077f24aaac954a5df8b136e9707a790','unrelated ChatView styles must retain their reviewed bytes');
  return baseline;
 }
 const composerBusyStyle = '\n._7yzX1q_primary [data-composer-busy]{animation:xh-composer-busy 1s linear infinite}\n@keyframes xh-composer-busy{to{transform:rotate(360deg)}}\n@media(prefers-reduced-motion:reduce){._7yzX1q_primary [data-composer-busy]{animation:none}}\n';
@@ -263,7 +263,8 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
   'skeleton/TodoPanel': 'aaf719207bee33d33551031960513e1d0c8b7b01bb35a807a362f7b75e849fdc',
   'queue/QueueDock': '3835c9f5eb3ccf4c71fdb5b6b9db96a37b726c6017a43770f537de092e32c1e2',
   // Turn activity and failure notice are separately pinned; the new spinner sheet is additive.
-  'chat/ChatView': 'ea56a6c3f52b53edd7d339e8d5c97a9c1a76fe032832c509bef447b84b164647',
+  // The back-to-bottom button sits in the reading column's right margin.
+  'chat/ChatView': 'bb932c6acad33381f451b56fd017327ad077f24aaac954a5df8b136e9707a790',
   'chat/LoadingIndicator': 'eab9ae6b02846b4d42d31cf3b573224d178e3c4cd0fe00bd23c8e0e980acc5f1',
   // Narrow-viewport tab strip: a 16px gap plus horizontal scroll below 600px,
   // and a 44px row on coarse pointers. Every byte above that append is
@@ -277,6 +278,8 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
   // Single scroll viewport: with a question card present the composer seat
   // leaves sticky and joins the flow tail (static, no gradient).
   'skeleton/ConversationRoot': '12d7914d05b27a95d983c1e080e9a0911ee543d7636e9ae72bd5a9399856b723',
+  // The panel body owns its scrolling, so it opts in to the sticky code banner.
+  'skeleton/DetailsPanel': 'cf9ef0931d73606863365cabbde4bb102914218c7ef128b682545b0a065c4c4a',
  };
  assert.equal(Object.hasOwn(oldCss,'@xharness/dsh-client-ui-conversation/LoadingIndicator.module.css'),false,'the frozen baseline must not acquire the new spinner sheet');
  for(const [name,sha] of Object.entries(reviewedStyles)) {
@@ -445,3 +448,43 @@ test('message fork opens only after success and reports failures on the unchange
  }
  assert.equal(calls.some(row=>row[0]==='open'),false,'a failed fork must not change the active chat');
 })
+
+// Sticky chrome belongs to the scroll container that owns it. The transcript is
+// one scrollport: a banner, label or heading sticking to its top slides over the
+// very text it belongs to. Code banners stick only where a scroll-container
+// owner opts in; tool-card labels and diff headings flow with their card.
+function stickyChromeFaults(sheets) {
+ const faults=[];
+ const rule=(sheet,selector)=>{const m=sheet.match(new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*\\{([^}]*)\\}'));return m?m[1]:null};
+ const banner=rule(sheets.codeBlock,'.bannerWrap');
+ if(banner===null||!/position:\s*var\(--dsl-code-block-banner-position,\s*static\)/.test(banner))faults.push('code block banner must flow unless a scroll-container owner opts in');
+ for(const [sheet,selector] of [[sheets.toolRow,'.Dh215a_ioLabel'],[sheets.bashSample,'.ANgngG_ioLabel'],[sheets.reviewDiff,'.xh-review-pane-heading']]) {
+  const body=rule(sheet,selector);
+  if(body===null||/sticky/.test(body))faults.push(selector+' must not stick in transcript flow');
+ }
+ for(const [sheet,selector] of [[sheets.filePane,'.xhfile-body'],[sheets.detailsPanel,'.JXxdLa_body'],[sheets.cordisDefine,'.tCdZ6q_sourcePanel'],[sheets.cordisDefine,'.tCdZ6q_codeSection']]) {
+  const body=rule(sheet,selector);
+  if(body===null||!/--dsl-code-block-banner-position:\s*sticky/.test(body)||!/overflow(?:-y)?:\s*(?:auto|scroll)/.test(body))faults.push(selector+' may opt in only as a scroll container');
+ }
+ return faults;
+}
+test('sticky chrome is owned by scroll containers and never floats over transcript flow',()=>{
+ const read=name=>readFileSync(new URL('../ui/src/modules/'+name,import.meta.url),'utf8');
+ const sheets={codeBlock:read('platform/primitives/markdown/CodeBlock.module.css'),toolRow:read('tool/tool/components/ToolRow.css'),bashSample:read('tool/tool/toolviews/bash-sample.css'),reviewDiff:read('tool/tool/components/ReviewDiffBlock.css'),filePane:read('browser/file-display/FilePane.css'),detailsPanel:read('conversation/skeleton/DetailsPanel.css'),cordisDefine:read('cordis/CordisDefineRow.css')};
+ assert.deepEqual(stickyChromeFaults(sheets),[]);
+ // Negative controls: every reviewed rule put back to its sticky or scroll-less
+ // past must be reported, and the mutation must actually change the sheet.
+ const label='color:var(--dsw-alias-label-caption);align-self:start}';
+ const stickyLabel='color:var(--dsw-alias-label-caption);align-self:start;position:sticky;top:0}';
+ for(const [name,changed] of [
+  ['code block banner sticky again',{...sheets,codeBlock:sheets.codeBlock.replace('position: var(--dsl-code-block-banner-position, static)','position: sticky')}],
+  ['tool input/output label sticky again',{...sheets,toolRow:sheets.toolRow.replace('.Dh215a_ioLabel{'+label,'.Dh215a_ioLabel{'+stickyLabel)}],
+  ['bash sample label sticky again',{...sheets,bashSample:sheets.bashSample.replace('.ANgngG_ioLabel{'+label,'.ANgngG_ioLabel{'+stickyLabel)}],
+  ['diff pane heading sticky again',{...sheets,reviewDiff:sheets.reviewDiff.replace('.xh-review-pane-heading{display:block;','.xh-review-pane-heading{position:sticky;top:0;z-index:1;display:block;')}],
+  ['detail panel opts in without scrolling',{...sheets,detailsPanel:sheets.detailsPanel.replace('overflow-y:auto;--dsl-code-block-banner-position:sticky','--dsl-code-block-banner-position:sticky')}],
+  ['file pane opts in without scrolling',{...sheets,filePane:sheets.filePane.replace('padding:20px;overflow:auto;overflow-wrap:anywhere;--dsl-code-block-banner-position:sticky','padding:20px;overflow-wrap:anywhere;--dsl-code-block-banner-position:sticky')}],
+ ]) {
+  assert.notDeepEqual(changed,sheets,name+': the control must change a sheet');
+  assert.ok(stickyChromeFaults(changed).length>0,name);
+ }
+});
