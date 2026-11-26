@@ -1,6 +1,9 @@
-.PvwIvW_root{position:static;flex:none;box-sizing:border-box;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}
-.PvwIvW_summary{display:flex;align-items:center;justify-content:center;width:32px;height:32px;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;border-radius:50%}
-.PvwIvW_summary svg{width:18px;height:18px}
-.PvwIvW_summary:hover,.PvwIvW_root[data-expanded]>.PvwIvW_summary{background:var(--dsw-alias-interactive-bg-hover)}
-.PvwIvW_summary:focus-visible{outline:2px solid var(--dsw-alias-border-l3);outline-offset:2px}
-.PvwIvW_details{position:absolute;z-index:100;bottom:calc(100% + 10px);left:0;box-sizing:border-box;width:max-content;min-width:min(220px,100%);max-width:min(340px,100%);max-height:min(300px,60vh);overflow:auto;display:grid;gap:6px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);overflow-wrap:anywhere}
+/* Labels stay regular: the dark theme's body weight (500) must not flatten the label/value hierarchy. */
+.PvwIvW_root{container-type:inline-size;container-name:xh-composer-stats;align-self:center;width:calc(100% - 2*var(--dsh-composer-side-clearance));max-width:var(--dsh-composer-card-max-width);min-width:0;box-sizing:border-box;padding:0 17px 3px;color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:400;line-height:18px;font-variant-numeric:tabular-nums}
+.PvwIvW_strip{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.PvwIvW_row{display:flex;flex:0 0 auto;align-items:baseline;column-gap:12px;white-space:nowrap;min-width:0;max-width:calc(100% + 17px);box-sizing:border-box;padding-right:17px;margin-right:-17px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 17px),#0000);mask-image:linear-gradient(90deg,#000 calc(100% - 17px),#0000)}
+.PvwIvW_row::-webkit-scrollbar{display:none}
+.PvwIvW_metric{display:inline-flex;align-items:baseline;gap:4px;white-space:nowrap}
+.PvwIvW_value{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary)}
+body[data-ds-dark-theme] .PvwIvW_value{color:var(--dsw-alias-label-primary)}
+@container xh-composer-stats (min-width:670px){.PvwIvW_strip{flex-direction:row;flex-wrap:nowrap;align-items:baseline;justify-content:space-between;column-gap:18px}.PvwIvW_row:not(:last-child){flex:none}.PvwIvW_row:last-child{flex:0 1 auto}}

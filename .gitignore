@@ -24,3 +24,7 @@ __pycache__/
 
 # Optional browser extension packages are built deterministically from TypeScript.
 /plugins/browser-extension/dist/
+
+# Scratch snapshots; the published UI stays in ui/dist/.
+/ui.dist/
+/ui.dist.tmp*/

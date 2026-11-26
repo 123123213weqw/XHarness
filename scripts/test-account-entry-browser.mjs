@@ -1,13 +1,13 @@
-import {fixtureUiRoot} from './fixtures/ui-fixture-build.mjs'
-/** Real assembled UI, fixture transport only; no sign-in or native permissions. */
+/** Regression for the old account entry. Real assembled UI; fixture Host only. */
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve, sep, extname } from 'node:path'
+import { fixtureUiRoot } from './fixtures/ui-fixture-build.mjs'
 
 const engine = process.env.UI_TEST_BROWSER ?? 'chromium'
 assert.ok(['chromium', 'webkit'].includes(engine))
-const require = createRequire(resolve(process.env.UI_TEST_DEPS ?? '/tmp/xharness-model-ui-tests', 'package.json'))
+const require = createRequire(resolve(process.env.UI_TEST_DEPS ?? 'scripts/ui-test-deps', 'package.json'))
 const browser = await require('playwright')[engine].launch({ headless: true })
 const base = fixtureUiRoot()
 const types = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.wasm': 'application/wasm' }
@@ -16,6 +16,14 @@ try {
     const page = await browser.newPage({ locale: lang, colorScheme: theme, viewport: { width: 1280, height: 820 } })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
+    // Detect account side effects on boot even with a desktop bridge present.
+    await page.addInitScript(() => {
+      window.accountInvocations = []
+      window.__TAURI__ = {
+        core: { invoke: async command => { if (command.startsWith('desktop_account_')) window.accountInvocations.push(command); return null } },
+        event: { listen: async name => { if (name === 'xharness-account-ready') window.accountInvocations.push(name); return () => {} } },
+      }
+    })
     await page.route('**/*', route => {
       const url = new URL(route.request().url())
       const file = resolve(base, '.' + (url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname)))
@@ -24,89 +32,47 @@ try {
     })
     await page.goto('http://127.0.0.1:39187/?fixture=1')
     const zh = lang.startsWith('zh')
-    const trigger = page.getByRole('button', { name: zh ? '账号与设置' : 'Account & settings', exact: true })
-    const account = page.getByRole('menuitem', { name: zh ? '账号与额度' : 'Account & allowance', exact: true })
-    const settings = page.getByRole('menuitem', { name: zh ? '设置' : 'Settings', exact: true })
-    const profile = page.getByRole('menuitem', { name: zh ? '使用档案' : 'Usage profile', exact: true })
-    const dialog = page.getByRole('dialog', { name: zh ? '设置' : 'Settings', exact: true })
-    assert.equal(await trigger.innerText(), 'XHarness', 'wide entry has no redundant account/settings caption')
-    assert.equal(await trigger.locator('.xhAccount_caption').count(), 0)
+    const title = zh ? '设置' : 'Settings'
+    const trigger = page.getByRole('button', { name: title, exact: true })
+    const dialog = page.getByRole('dialog', { name: title, exact: true })
+    const close = dialog.getByRole('button', { name: zh ? '关闭' : 'Close', exact: true })
+    await trigger.waitFor()
+    assert.equal(await trigger.count(), 1)
+    assert.equal(await trigger.getAttribute('aria-haspopup'), 'dialog')
+    assert.equal(await trigger.locator('svg').count(), 1)
+    assert.equal(await trigger.innerText(), title)
+    assert.equal(await page.locator('[data-xh-account-trigger],[data-xharness-assistant-nav]').count(), 0)
     await trigger.click()
-    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem')
-    assert.equal(await account.evaluate(el => el === document.activeElement), true)
-    await account.press('End')
-    assert.equal(await settings.evaluate(el => el === document.activeElement), true)
-    await settings.press('Home')
-    assert.equal(await account.evaluate(el => el === document.activeElement), true)
-    await account.press('Escape')
+    await dialog.waitFor()
+    assert.equal(await dialog.locator('nav button[aria-current="true"]').innerText(), zh ? '通用设置' : 'General')
+    assert.equal(await dialog.getByRole('button', { name: /Account|账号|账户/ }).count(), 0)
     assert.equal(await page.getByRole('menu').count(), 0)
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    await dialog.getByRole('button', { name: zh ? '使用档案' : 'Profile', exact: true }).click()
+    await dialog.locator('.xhp-root').waitFor()
+    await close.click()
+    assert.equal(await trigger.evaluate(el => el === document.activeElement), true, 'pointer close returns focus to Settings')
+    await trigger.press('Enter')
+    await dialog.waitFor()
+    await page.keyboard.press('Escape')
+    await dialog.waitFor({ state: 'hidden' })
+    await page.waitForFunction(() => document.activeElement?.hasAttribute('data-xh-settings-trigger'))
 
-    for (const [target, section] of [[account, 'managed-account'], [profile, 'profile'], [settings, 'general']]) {
-      await trigger.click()
-      await target.click()
-      await dialog.waitFor()
-      assert.equal(await page.getByRole('menu').count(), 0)
-      const selected = dialog.locator('button[aria-current="true"]')
-      assert.equal(await selected.innerText(), section === 'managed-account' ? (zh ? '账户与模型服务' : 'Account & model service')
-        : section === 'profile' ? (zh ? '使用档案' : 'Profile') : (zh ? '通用设置' : 'General'))
-      if (section === 'managed-account') {
-        await dialog.getByText(zh ? '请在桌面软件中连接账号。' : 'Connect your account in the desktop app.', { exact: true }).waitFor()
-        assert.equal(await dialog.getByRole('button', { name: zh ? '连接账号' : 'Connect account', exact: true }).count(), 0)
-      }
-      await dialog.getByRole('button', { name: zh ? '关闭' : 'Close', exact: true }).click()
-      assert.equal(await trigger.evaluate(el => el === document.activeElement), true, 'durable modal opener')
-    }
-    // Deterministic layout-only transition: no outside pointer event. The
-    // delayed wide->rail commit must keep a newly opened menu and its focus,
-    // and must re-anchor it to the settled trigger rather than stale geometry.
-    await trigger.click()
-    await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitem')
-    await page.getByRole('button', { name: zh ? '收起侧边栏' : 'Collapse sidebar', exact: true }).evaluate(el => el.click())
-    await page.waitForFunction(() => document.querySelector('[data-xh-account-trigger]')?.classList.contains('xhAccount_rail'))
-    assert.equal(await trigger.innerText(), '', 'rail stays icon-only with an accessible label')
-    assert.equal(await trigger.getAttribute('aria-expanded'), 'true', 'layout settle does not dismiss live menu')
-    assert.equal(await account.evaluate(el => el === document.activeElement), true, 'focus survives rail commit')
-    const anchor = await trigger.boundingBox()
-    const placed = await page.getByRole('menu').boundingBox()
-    assert.ok(Math.abs(placed.y + placed.height + 4 - anchor.y) < 1, 'menu remeasures settled anchor')
-    await settings.click(); await dialog.waitFor()
-    await dialog.getByRole('button', { name: zh ? '关闭' : 'Close', exact: true }).click()
-    await page.getByRole('button', { name: zh ? '打开侧边栏' : 'Open sidebar', exact: true }).click()
-
-    // Collapse while a menu is visible, then validate the same entry in rail.
-    await trigger.click()
     await page.getByRole('button', { name: zh ? '收起侧边栏' : 'Collapse sidebar', exact: true }).click()
-    assert.equal(await page.getByRole('menu').count(), 0)
     await page.setViewportSize({ width: 426, height: 664 })
-    // This assertion covers the resting narrow rail, not another collapse
-    // race (the live-menu/focus race above intentionally remains unwaited).
-    // A visible/stable button may still be the fading wide entry: opacity
-    // does not make it non-actionable, and viewport resize is asynchronous.
-    // Await the shell's actual rail/fade lifecycle, never a fixed delay or a
-    // retry that could conceal a menu dismissed after the following click.
     await page.waitForFunction(() => {
-      const entry = document.querySelector('[data-xh-account-trigger]')
+      const entry = document.querySelector('[data-xh-settings-trigger]')
       const sidebar = entry?.closest('.U910La_root')
-      const foot = entry?.closest('.U910La_footArea')
-      const frame = document.querySelector('._84hhiq_frame')
-      return innerWidth === 426 && innerHeight === 664
-        && entry?.classList.contains('xhAccount_rail')
-        && sidebar?.classList.contains('U910La_collapsed')
+      return innerWidth === 426 && sidebar?.classList.contains('U910La_collapsed')
         && !sidebar.classList.contains('U910La_fading')
-        && foot && getComputedStyle(foot).opacity === '1'
-        && frame?.getBoundingClientRect().width === 426
-        && [foot, frame].every(element => element.getAnimations().every(animation =>
-          !animation.pending && animation.playState !== 'running'))
     })
+    assert.equal(await trigger.evaluate(el => el.querySelector('span').getBoundingClientRect().width <= 1), true, 'rail label is visually hidden')
     await trigger.click()
-    const box = await page.getByRole('menu').boundingBox()
-    assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= 426 && box.y + box.height <= 664, 'rail menu fits viewport')
-    assert.equal(await trigger.getAttribute('aria-expanded'), 'true')
-    await account.press('Escape')
-    assert.equal(await trigger.getAttribute('aria-expanded'), 'false')
+    await dialog.getByRole('button', { name: zh ? '模型' : 'Models', exact: true }).click()
+    await dialog.getByRole('button', { name: zh ? '添加自定义提供方' : 'Add a custom provider', exact: true }).waitFor()
+    await close.click()
+    assert.deepEqual(await page.evaluate(() => window.accountInvocations), [], 'no desktop login or callback subscription')
     assert.deepEqual(errors, [])
     await page.close()
   }
-  console.log(`${engine}: account entry, bilingual themed menu, keyboard, focus restoration, Web limitation, feature routing and narrow rail passed`)
+  console.log(`${engine}: bilingual light/dark Settings, focus restoration, compact rail, local usage and model setup without an account passed`)
 } finally { await browser.close() }

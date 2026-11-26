@@ -207,6 +207,7 @@ declare module "../types/slots" {
      * above the textarea belongs in `conversation.input.dock`.
      */
     'conversation.composer.dock': { kind: 'list'; scope: 'session'; owner: InputZone }
+    'conversation.composer.status': { kind: 'list'; scope: 'session'; owner: object }
     /**
      * The left end of the tool row INSIDE the composer card, after the
      * resident chrome (access mode, plan, attach) — the seat for a small
@@ -638,6 +639,7 @@ export type ConversationSlotProps =
   PropsRuntime<'conversation'> & PropsRenderSlots<
     | 'conversation.session' | 'conversation.session.header'
     | 'conversation.composer' | 'conversation.composer.bar'
+    | 'conversation.composer.status'
     | 'conversation.input.overlay'
     | 'conversation.input.dock' | 'conversation.composer.dock'
     | 'conversation.input.left' | 'conversation.input.right'

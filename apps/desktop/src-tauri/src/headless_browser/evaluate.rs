@@ -6,7 +6,11 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 impl Instance {
-    pub(super) async fn evaluate(&mut self, arguments: Value) -> Result<Value, String> {
+    pub(super) async fn evaluate<'a>(
+        &mut self,
+        arguments: Value,
+        admit: impl FnOnce() -> Result<super::seat::Effect<'a>, String>,
+    ) -> Result<Value, String> {
         let request = match execution::Request::parse(arguments) {
             Ok(request) => request,
             Err(error) => return Ok(super::rejected(&error)),
@@ -15,6 +19,10 @@ impl Instance {
         self.frame = None;
         let deadline =
             tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms + 1500);
+        let effect = match admit() {
+            Ok(effect) => effect,
+            Err(reason) => return Ok(super::rejected(&reason)),
+        };
         let result = async {
             let raw = self.process.cdp.evaluate(request.script(&id)).await?;
             let start = execution::decode(&raw.to_string(), &id)?;
@@ -43,6 +51,7 @@ impl Instance {
             Err(_) => execution::unknown("JavaScript wait timed out; code may still be running"),
         };
         receipt["source"] = json!({"engine":"chromium-headless","untrusted":true,"tab_id":self.id});
+        effect.resolve(super::known_effect(&receipt));
         Ok(receipt)
     }
 }

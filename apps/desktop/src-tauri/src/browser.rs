@@ -108,14 +108,28 @@ impl BrowserBounds {
 struct BrowserInner {
     tabs: HashMap<String, BrowserTab>,
     active: Option<String>,
+    owner_tabs: HashMap<String, String>,
     bounds: Option<BrowserBounds>,
     presentation: Option<viewport::Presentation>,
     next_label: u64,
     clock: u64,
 }
 
+impl BrowserInner {
+    fn detach_tab(&mut self, tab_id: &str) -> Option<BrowserTab> {
+        if self.active.as_deref() == Some(tab_id) {
+            self.active = None;
+        }
+        self.owner_tabs.retain(|_, id| id != tab_id);
+        self.tabs.remove(tab_id)
+    }
+}
+
 struct BrowserTab {
     webview: Webview,
+    // Keep lifetime ownership even after site access is revoked or another
+    // page becomes this chat's current action target.
+    lifetime_owner: Option<String>,
     last_used: u64,
     inspector: Arc<crate::browser_inspect::Inspector>,
     loaded: Arc<AtomicBool>,
@@ -132,16 +146,8 @@ impl BrowserState {
         value: &serde_json::Value,
     ) -> Result<(), String> {
         let inner = self.0.lock().map_err(|_| "browser state unavailable")?;
-        if inner.active.as_deref() != Some(tab_id) {
-            return Err("browser tab changed".into());
-        }
         let tab = inner.tabs.get(tab_id).ok_or("browser tab closed")?;
         let layout = tab.applied_layout.ok_or("browser layout is not ready")?;
-        if inner.presentation.is_none_or(|requested| {
-            requested.pane != layout.pane || requested.viewport != layout.viewport
-        }) {
-            return Err("browser layout is changing; observe again".into());
-        }
         layout.verify(
             value["width"].as_f64().ok_or("missing viewport width")?,
             value["height"].as_f64().ok_or("missing viewport height")?,
@@ -260,10 +266,10 @@ impl BrowserState {
             return Err("invalid browser tab".into());
         }
         let inner = self.0.lock().map_err(|_| "browser state unavailable")?;
-        if inner.active.as_deref() != Some(tab_id) || inner.bounds.is_none() {
-            return Err("only the active, laid-out browser tab can be inspected".into());
-        }
         let tab = inner.tabs.get(tab_id).ok_or("browser tab is not open")?;
+        if tab.applied_layout.is_none() {
+            return Err("browser page layout is not ready".into());
+        }
         Ok((tab.webview.clone(), Arc::clone(&tab.inspector)))
     }
     pub(super) fn loaded_receipt(
@@ -276,10 +282,7 @@ impl BrowserState {
         let (view, inspector, loaded) = {
             let inner = self.0.lock().map_err(|_| "browser state unavailable")?;
             let tab = inner.tabs.get(tab_id).ok_or("browser tab closed")?;
-            if inner.active.as_deref() != Some(tab_id)
-                || inner.bounds.is_none()
-                || !tab.loaded.load(Ordering::SeqCst)
-            {
+            if tab.applied_layout.is_none() || !tab.loaded.load(Ordering::SeqCst) {
                 return Err("browser page is not ready".into());
             }
             (
@@ -303,24 +306,59 @@ impl BrowserState {
             serde_json::json!({"ok":true,"effect":"applied","state":"ready","tab_id":tab_id,"url":url.to_string()}),
         )
     }
+    pub(super) fn bind_owner(&self, owner: &str, tab_id: &str) -> Result<(), String> {
+        let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
+        let tab = inner
+            .tabs
+            .get_mut(tab_id)
+            .ok_or("browser tab is not open")?;
+        if !tab.inspector.delegation.bound(owner) {
+            return Err("browser ownership was not granted".into());
+        }
+        tab.lifetime_owner = Some(owner.into());
+        // Explicit revoke + rebind transfers lifetime ownership too. A former
+        // owner must not retain the ability to close the new owner's page.
+        inner
+            .owner_tabs
+            .retain(|bound, id| id != tab_id || bound == owner);
+        if let Some(previous) = inner.owner_tabs.insert(owner.into(), tab_id.into()) {
+            if previous != tab_id {
+                if let Some(old) = inner.tabs.get(&previous) {
+                    old.inspector.invalidate();
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Lifetime ownership permits cleanup after a load failure or site grant
+    /// revocation. It does not authorize DOM, input, screenshots or HTTP.
+    pub(super) fn owned_tab(&self, owner: &str) -> Result<String, String> {
+        let inner = self.0.lock().map_err(|_| "browser state unavailable")?;
+        let id = inner
+            .owner_tabs
+            .get(owner)
+            .ok_or("no browser is owned by this chat")?;
+        if !inner.tabs.contains_key(id) {
+            return Err("browser tab is not open".into());
+        }
+        Ok(id.clone())
+    }
     pub(super) fn delegated_tab(&self, owner: &str) -> Result<String, String> {
         let (id, view, inspector) = {
             let inner = self.0.lock().map_err(|_| "browser state unavailable")?;
-            let id = inner.active.as_ref().ok_or("native browser is hidden")?;
-            let tab = inner.tabs.get(id).ok_or("native browser is not open")?;
-            if inner.bounds.is_none() {
-                return Err("native browser is not laid out".into());
-            }
+            let id = inner
+                .owner_tabs
+                .get(owner)
+                .ok_or("no browser is bound to this chat")?;
+            let tab = inner.tabs.get(id).ok_or("browser tab is not open")?;
             (id.clone(), tab.webview.clone(), Arc::clone(&tab.inspector))
         };
         let url = view.url().map_err(|_| "browser URL unavailable")?;
-        let (current, other) = self.inspection_target(&id)?;
-        if current.label() != view.label()
-            || !Arc::ptr_eq(&inspector, &other)
-            || !inspector.delegation.permits(owner, &url, false)
-        {
-            return Err("native browser is not delegated to this session".into());
+        let expired = inspector.delegation.renew_host(owner, &url)?;
+        if expired {
+            inspector.invalidate();
         }
+        self.loaded_receipt(owner, &id)?;
         Ok(id)
     }
     /// Main-thread dispatch guard must never wait for a registry lock held by
@@ -330,14 +368,23 @@ impl BrowserState {
         &self,
         label: &str,
         inspector: &Arc<crate::browser_inspect::Inspector>,
+        visual: bool,
     ) -> Result<(), String> {
         let inner = self
             .0
             .try_lock()
             .map_err(|_| "browser state busy before native dispatch")?;
-        let id = inner.active.as_ref().ok_or("native browser hidden")?;
-        let tab = inner.tabs.get(id).ok_or("native browser closed")?;
-        if inner.bounds.is_none()
+        let (tab_id, tab) = inner
+            .tabs
+            .iter()
+            .find(|(_, tab)| tab.webview.label() == label && Arc::ptr_eq(inspector, &tab.inspector))
+            .ok_or("native browser closed")?;
+        // Only GTK has a verified offscreen render host. This does not limit
+        // background DOM calls, which never use the native visual dispatcher.
+        if visual && !cfg!(target_os = "linux") && inner.active.as_ref() != Some(tab_id) {
+            return Err("background native visual actions are unavailable on this platform".into());
+        }
+        if tab.applied_layout.is_none()
             || !tab.loaded.load(Ordering::SeqCst)
             || tab.webview.label() != label
             || !Arc::ptr_eq(inspector, &tab.inspector)
@@ -529,6 +576,49 @@ pub async fn desktop_browser_navigate(
     url: String,
 ) -> Result<(), String> {
     ensure_main(&caller)?;
+    navigate_page(app, caller, &state, tab_id, url, None).await
+}
+
+/// Creation/readiness are service-owned; no pane activation or UI receipt.
+pub(super) async fn open_owned(
+    app: &AppHandle,
+    tab_id: String,
+    url: String,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let caller = app
+        .get_webview("main")
+        .ok_or("main renderer is unavailable")?;
+    let state = app.state::<BrowserState>();
+    navigate_page(app.clone(), caller, &state, tab_id, url, Some(cancelled)).await
+}
+
+fn background_layout() -> Result<viewport::Presentation, String> {
+    viewport::Presentation::new(
+        BrowserBounds {
+            x: 0.0,
+            y: 0.0,
+            width: 1280.0,
+            height: 720.0,
+        },
+        Some(viewport::Viewport {
+            width: 1280,
+            height: 720,
+        }),
+    )
+}
+
+async fn navigate_page(
+    app: AppHandle,
+    caller: Webview,
+    state: &BrowserState,
+    tab_id: String,
+    url: String,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), String> {
+    let owned = cancelled.is_some();
+    #[cfg(not(target_os = "macos"))]
+    let _ = &caller;
     if !valid_tab_id(&tab_id) {
         return Err("invalid browser tab".into());
     }
@@ -538,13 +628,13 @@ pub async fn desktop_browser_navigate(
     // Failure keeps the system default; it must not block ordinary navigation.
     #[cfg(target_os = "macos")]
     let user_agent = user_agent::for_macos(&caller).await;
-    // Before a navigation can enter native dispatch, record its admission.
-    // Closing/switching the pane after this point must not claim no effect.
-    if let Some(lifecycle) = app.try_state::<crate::browser_lifecycle::BrowserLifecycle>() {
-        lifecycle.mark_started(&tab_id);
-    }
     {
         let mut inner = state.0.lock().map_err(|_| "browser state unavailable")?;
+        // Retirement signals cancellation before detaching under this same
+        // registry lock, so a provisional tab cannot be inserted behind it.
+        if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err("browser creation cancelled during session retirement".into());
+        }
         if inner.tabs.contains_key(&tab_id) {
             inner.clock += 1;
             let clock = inner.clock;
@@ -565,7 +655,10 @@ pub async fn desktop_browser_navigate(
             let oldest = inner
                 .tabs
                 .iter()
-                .filter(|(id, _)| inner.active.as_deref() != Some(id.as_str()))
+                .filter(|(id, _)| {
+                    inner.active.as_deref() != Some(id.as_str())
+                        && !inner.owner_tabs.values().any(|bound| bound == *id)
+                })
                 .min_by_key(|(_, tab)| tab.last_used)
                 .map(|(id, _)| id.clone())
                 .ok_or("no inactive browser tab can be suspended")?;
@@ -576,7 +669,11 @@ pub async fn desktop_browser_navigate(
                 emit(&app, &oldest, "suspended", "");
             }
         }
-        let bounds = inner.bounds.ok_or("browser pane is not laid out yet")?;
+        let bounds = if owned {
+            background_layout()?.bounds
+        } else {
+            inner.bounds.ok_or("browser pane is not laid out yet")?
+        };
         if !bounds.valid() {
             return Err("invalid browser pane bounds".into());
         }
@@ -726,12 +823,58 @@ pub async fn desktop_browser_navigate(
             tab_id.clone(),
             BrowserTab {
                 webview: child,
+                lifetime_owner: None,
                 last_used,
                 inspector,
                 loaded,
                 applied_layout: None,
             },
         );
+    }
+    if owned {
+        let view = {
+            let inner = state.0.lock().map_err(|_| "browser state unavailable")?;
+            inner
+                .tabs
+                .get(&tab_id)
+                .ok_or("browser creation was cancelled")?
+                .webview
+                .clone()
+        };
+        let requested = background_layout()?;
+        view.set_zoom(requested.zoom).map_err(|e| e.to_string())?;
+        crate::browser_native::layout(
+            &view,
+            (
+                requested.bounds.x,
+                requested.bounds.y,
+                requested.bounds.width,
+                requested.bounds.height,
+            ),
+        )
+        .await?;
+        let layout = requested.with_inset(crate::browser_native::content_inset(&view).await?)?;
+        view.set_bounds(layout.bounds.rect())
+            .map_err(|e| e.to_string())?;
+        view.set_zoom(layout.zoom).map_err(|e| e.to_string())?;
+        crate::browser_native::layout(
+            &view,
+            (
+                layout.bounds.x,
+                layout.bounds.y,
+                layout.bounds.width,
+                layout.bounds.height,
+            ),
+        )
+        .await?;
+        crate::browser_native::present(&view, false).await?;
+        let mut inner = state.0.lock().map_err(|_| "browser state unavailable")?;
+        inner
+            .tabs
+            .get_mut(&tab_id)
+            .ok_or("browser creation was cancelled")?
+            .applied_layout = Some(layout);
+        return Ok(());
     }
     state.apply_layout().await?;
     let inner = state.0.lock().map_err(|_| "browser state unavailable")?;
@@ -755,7 +898,7 @@ pub async fn desktop_browser_activate(
         return Err("invalid browser tab".into());
     }
     let requested_tab = tab_id.clone();
-    let active_view = {
+    let (active_view, hidden_views) = {
         let mut inner = state.0.lock().map_err(|_| "browser state unavailable")?;
         if inner.active != tab_id {
             trace(
@@ -767,16 +910,8 @@ pub async fn desktop_browser_activate(
                 },
                 None,
             );
-            // Hiding and then returning to the same tab must not revive a pending
-            // observation or an old action frame.
-            for id in [inner.active.as_ref(), tab_id.as_ref()]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(tab) = inner.tabs.get(id) {
-                    tab.inspector.revoke();
-                }
-            }
+            // Presentation changes never revoke another chat's control lease.
+            // apply_layout invalidates only the page whose geometry changes.
         }
         inner.clock += 1;
         let clock = inner.clock;
@@ -791,17 +926,27 @@ pub async fn desktop_browser_activate(
         // out the pane before selecting its tab; updating only the previously
         // active view leaves a reselected view at its old rectangle. Hide the old
         // views first, then apply the current logical rectangle before showing.
-        for (id, tab) in &inner.tabs {
-            if inner.active.as_deref() != Some(id.as_str()) || inner.bounds.is_none() {
-                tab.webview.hide().map_err(|error| error.to_string())?;
-            }
-        }
-        inner
+        let hidden_views = inner
+            .tabs
+            .iter()
+            .filter(|(id, _)| {
+                inner.active.as_deref() != Some(id.as_str()) || inner.bounds.is_none()
+            })
+            .map(|(_, tab)| tab.webview.clone())
+            .collect::<Vec<_>>();
+        let active_view = inner
             .active
             .as_ref()
             .and_then(|id| inner.tabs.get(id))
-            .map(|tab| tab.webview.clone())
+            .map(|tab| tab.webview.clone());
+        (active_view, hidden_views)
     };
+    for view in hidden_views {
+        crate::browser_native::present(&view, false).await?;
+    }
+    if let Some(view) = &active_view {
+        crate::browser_native::present(view, true).await?;
+    }
     state.apply_layout().await?;
     if let Some(view) = &active_view {
         let inner = state.0.lock().map_err(|_| "browser state unavailable")?;
@@ -824,11 +969,6 @@ pub async fn desktop_browser_bounds(
     let layout = viewport::Presentation::new(bounds, viewport)?;
     {
         let mut inner = state.0.lock().map_err(|_| "browser state unavailable")?;
-        if inner.presentation != Some(layout) {
-            for tab in inner.tabs.values() {
-                tab.inspector.invalidate();
-            }
-        }
         inner.presentation = Some(layout);
         inner.bounds = Some(layout.bounds);
     }
@@ -873,35 +1013,90 @@ pub async fn desktop_browser_close(
     if !valid_tab_id(&tab_id) {
         return Err("invalid browser tab".into());
     }
-    let tab = {
-        let mut inner = state.0.lock().map_err(|_| "browser state unavailable")?;
-        if inner.active.as_deref() == Some(&tab_id) {
-            inner.active = None;
+    state.close_tab(caller.app_handle(), &tab_id)
+}
+impl BrowserState {
+    pub(super) fn close_tab(&self, app: &AppHandle, tab_id: &str) -> Result<(), String> {
+        let tab = self
+            .0
+            .lock()
+            .map_err(|_| "browser state unavailable")?
+            .detach_tab(tab_id);
+        if let Some(tab) = tab {
+            destroy_tab(app, tab)?;
         }
-        inner.tabs.remove(&tab_id)
-    };
-    // Native destruction may rendezvous with the UI thread. Do not hold the
-    // registry mutex across it; UI dispatch guards also inspect this registry.
-    if let Some(tab) = tab {
-        tab.inspector.revoke();
-        trace(
-            caller.app_handle(),
-            TraceEvent::Close,
-            Some(tab.webview.label()),
-        );
-        let result = tab.webview.close();
-        trace(
-            caller.app_handle(),
-            if result.is_ok() {
-                TraceEvent::CloseAccepted
-            } else {
-                TraceEvent::CloseFailed
-            },
-            Some(tab.webview.label()),
-        );
-        result.map_err(|error| error.to_string())?;
+        Ok(())
     }
-    Ok(())
+
+    pub(super) fn close_tab_for_owner(
+        &self,
+        app: &AppHandle,
+        owner: &str,
+        tab_id: &str,
+    ) -> Result<(), String> {
+        let tab = {
+            let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
+            if inner.owner_tabs.get(owner).map(String::as_str) != Some(tab_id) {
+                return Err("browser ownership changed before close".into());
+            }
+            inner.detach_tab(tab_id).ok_or("browser tab is not open")?
+        };
+        destroy_tab(app, tab)
+    }
+
+    pub(super) fn retire_owned(
+        &self,
+        app: &AppHandle,
+        owner: &str,
+        provisional: &[String],
+    ) -> Result<(), String> {
+        let tabs = {
+            let mut inner = self.0.lock().map_err(|_| "browser state unavailable")?;
+            let ids: Vec<_> = inner
+                .tabs
+                .iter()
+                .filter(|(id, tab)| match tab.lifetime_owner.as_deref() {
+                    Some(current) => current == owner,
+                    None => provisional.contains(id),
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| inner.detach_tab(&id).map(|tab| (id, tab)))
+                .collect::<Vec<_>>()
+        };
+        let mut failed = false;
+        for (id, tab) in tabs {
+            let was_ready = tab.lifetime_owner.is_some();
+            match destroy_tab(app, tab) {
+                Ok(()) if was_ready => crate::browser_lifecycle::notify_closed(app, owner, &id),
+                Ok(()) => {}
+                Err(_) => failed = true,
+            }
+        }
+        if failed {
+            return Err("native WebView cleanup not confirmed during session retirement".into());
+        }
+        Ok(())
+    }
+}
+
+fn destroy_tab(app: &AppHandle, tab: BrowserTab) -> Result<(), String> {
+    // Native destruction can rendezvous with the UI. The registry is already
+    // unlocked, and its exact tab has been removed before dispatch.
+    tab.inspector.revoke();
+    trace(app, TraceEvent::Close, Some(tab.webview.label()));
+    let result = tab.webview.close();
+    trace(
+        app,
+        if result.is_ok() {
+            TraceEvent::CloseAccepted
+        } else {
+            TraceEvent::CloseFailed
+        },
+        Some(tab.webview.label()),
+    );
+    result.map_err(|error| error.to_string())
 }
 
 pub fn close_all(app: &AppHandle) {
@@ -910,6 +1105,7 @@ pub fn close_all(app: &AppHandle) {
     };
     let tabs = if let Ok(mut inner) = state.0.lock() {
         inner.active = None;
+        inner.owner_tabs.clear();
         inner.tabs.drain().map(|(_, tab)| tab).collect::<Vec<_>>()
     } else {
         return;
@@ -946,6 +1142,7 @@ mod tests {
             let _ = sender.send(copy.native_dispatch_target(
                 "unused",
                 &Arc::new(crate::browser_inspect::Inspector::default()),
+                false,
             ));
         });
         let result = receiver.recv_timeout(std::time::Duration::from_millis(200));

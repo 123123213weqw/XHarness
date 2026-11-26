@@ -33,6 +33,7 @@
     "allow-desktop-set-computer-activity",
     "allow-desktop-browser-navigate",
     "allow-desktop-browser-activate",
+    "allow-desktop-browser-page-state",
     "allow-desktop-browser-bounds",
     "allow-desktop-browser-action",
     "allow-desktop-browser-close",
@@ -45,11 +46,7 @@
     "allow-desktop-browser-pick",
     "allow-desktop-browser-perform",
     "allow-desktop-headless-preview",
-    "allow-desktop-headless-control",
-    "allow-desktop-account-start",
-    "allow-desktop-account-poll",
-    "allow-desktop-account-finish",
-    "allow-desktop-account-status",
-    "allow-desktop-account-open"
+    "allow-desktop-headless-manual",
+    "allow-desktop-headless-control"
   ]
 }
