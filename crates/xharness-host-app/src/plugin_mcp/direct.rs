@@ -14,6 +14,7 @@ pub(super) fn is_direct(name: &str) -> bool {
             | "browser_observe"
             | "browser_perform"
             | "browser_evaluate"
+            | "browser_debug"
             | "browser_input"
             | "browser_screenshot"
             | "browser_request"
@@ -56,7 +57,7 @@ pub(super) fn specs(
     } else {
         native_browser::headless_tools()
     };
-    definitions
+    let mut specs: Vec<_> = definitions
         .into_iter()
         .map(|d| {
             let tool = d["name"].as_str().unwrap_or_default().to_owned();
@@ -131,5 +132,45 @@ pub(super) fn specs(
             })
             .with_timeout(std::time::Duration::from_secs(45))
         })
-        .collect()
+        .collect();
+    if !webview {
+        specs.push(debug_spec(native, owner));
+    }
+    specs
+}
+
+fn debug_spec(native: Arc<NativeBrowser>, owner: String) -> ToolSpec {
+    let schema = super::contract::direct_schema(
+        &xharness_browser::debug_schema(),
+        &[native_browser::HEADLESS_SERVER],
+    );
+    ToolSpec::new(
+        ToolDefinition::new(
+            "browser_debug",
+            "Standalone Chrome/Edge only. On the current open page, start recording Console and Network in the background, even between turns. Read untrusted events using capture_id and next_cursor; optional kind=console or network. Stop discards the capture. Start before the navigation you want to inspect. Does not capture headers or response bodies.",
+            schema,
+        ),
+        move |context| {
+            let native = native.clone();
+            let owner = owner.clone();
+            async move {
+                let result = async {
+                    let mut arguments = context.arguments.as_object().cloned()
+                        .ok_or_else(|| super::error("browser debug arguments must be an object"))?;
+                    if arguments.remove("backend").as_ref().and_then(Value::as_str)
+                        != Some(native_browser::HEADLESS_SERVER)
+                    {
+                        return Err(super::error("browser_debug requires backend=browser"));
+                    }
+                    super::native_output::receipt(native.debug(
+                        &owner,
+                        Value::Object(arguments),
+                        &context.cancellation,
+                    ).await.map_err(super::error)?)
+                }.await;
+                super::native_output::finish(result)
+            }
+        },
+    )
+    .with_timeout(std::time::Duration::from_secs(12))
 }

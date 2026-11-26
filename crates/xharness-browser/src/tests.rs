@@ -112,3 +112,17 @@ async fn standalone_has_no_trusted_desktop_surface() {
         .is_err());
     assert!(standalone.sessions.lock().await.is_empty());
 }
+
+#[tokio::test]
+async fn debug_requires_standalone_and_never_creates_a_chat_browser() {
+    let args = serde_json::json!({"action":"start"});
+    let desktop = super::Browsers::default();
+    assert_eq!(
+        desktop.debug("fixture", args.clone()).await.unwrap_err(),
+        "browser_debug is available only in a standalone Host"
+    );
+    let standalone = super::Browsers::standalone();
+    assert!(standalone.debug("fixture", args).await.is_err());
+    assert!(desktop.sessions.lock().await.is_empty());
+    assert!(standalone.sessions.lock().await.is_empty());
+}

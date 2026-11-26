@@ -80,6 +80,22 @@ impl NativeBrowser {
         matches!(self.transport, Transport::Desktop { .. })
     }
 
+    pub(crate) async fn debug(
+        &self,
+        owner: &str,
+        arguments: Value,
+        cancelled: &CancellationToken,
+    ) -> Result<Value, String> {
+        let Transport::Local(browsers) = &self.transport else {
+            return Err("browser_debug is available only in a standalone Host".into());
+        };
+        tokio::select! {
+            biased;
+            _ = cancelled.cancelled() => Err("browser debug call cancelled".into()),
+            result = browsers.debug(owner, arguments) => result,
+        }
+    }
+
     pub(crate) async fn shutdown_local(&self) -> Result<(), String> {
         match &self.transport {
             Transport::Local(browsers) => browsers.shutdown().await,

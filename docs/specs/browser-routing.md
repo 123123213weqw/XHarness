@@ -93,8 +93,46 @@ screenshot, vision-capable model, or active desktop. It retains the same
 structured result, per-execution console, page origin constraints and
 no-automatic-replay behavior. Close or retire the owning chat to stop its
 browser and discard its temporary profile; Host shutdown does the same for all
-owned browsers. This mode has no sidebar preview, and does not add continuous
-Console/Network events or debugger sessions.
+owned browsers. This mode has no sidebar preview or breakpoint debugger.
+
+### Continuous Console and Network (standalone MVP)
+
+`browser_debug` is a direct, typed tool on the standalone Host only. It
+uses the usual tool approval and the current chat's existing `browser` page.
+It neither accepts an endpoint nor attaches to a personal browser. Call:
+
+```json
+{"backend":"browser","action":"start"}
+{"backend":"browser","action":"read","capture_id":"<from start>","after":0,"kind":"network","limit":20,"wait_ms":1500}
+{"backend":"browser","action":"stop","capture_id":"<from start>"}
+```
+
+Open a browser page first. Start before any subsequent navigation you want to
+inspect; initial navigation before start and historical coverage are not
+guaranteed. It continues independently of JS evaluation and model turns.
+Read returns a single object containing `events`, `state`, `next_cursor`,
+`has_more`, and `gap`. Filter by `kind`, or omit it to read both. Reuse
+`next_cursor` within the same capture; reads do not consume events. Use a new
+cursor after an expired/disconnected capture is restarted. Stop discards the
+capture; page close, chat retirement and Host shutdown also release it.
+
+The in-memory journal keeps the newest 256 events for up to 10 minutes of
+recording; a read returns at most 20 events (up to 6 KB of event JSON)
+and can wait up to 3 seconds. A
+lost range, disconnected collection or incomplete request tracking is reported
+as a gap, never silently repaired. Requests use `started`, `redirect`,
+`finished` and `failed` phases. A completed HTTP 500 is `finished` with status
+500; a transport failure is `failed`. Completion is linked to the originating
+event by `request_seq`. URLs omit userinfo, query and fragment. Request/response
+headers and bodies are not forwarded. Console arguments are bounded and
+objects are not expanded. Console text and URL paths may still contain sensitive
+or untrusted page content; tool results explicitly read by the model follow
+normal conversation history semantics. No background event is sent to a model
+automatically.
+
+Coverage is the owned page target, not a whole browser, dedicated coverage for
+workers/out-of-process frames, persistent network archives, or a DevTools panel.
+The native WebView and desktop bridge do not expose this tool in the MVP.
 
 The Linux CI acceptance launches the actual standalone Host and an installed
 Chrome/Edge against a localhost fixture with an OpenAI-compatible scripted

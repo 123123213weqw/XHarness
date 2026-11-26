@@ -1,6 +1,8 @@
 //! Chat-owned background browser. Presentation never grants/revokes control.
 #![forbid(unsafe_code)]
 mod contracts;
+mod debug_capture;
+pub use debug_capture::schema as debug_schema;
 mod evaluate;
 pub mod execution;
 pub use contracts::*;
@@ -76,6 +78,8 @@ struct Frame {
     created: Instant,
 }
 struct Instance {
+    // Drop the event socket before the managed browser process.
+    debug: Option<debug_capture::Capture>,
     process: Process,
     id: String,
     frame: Option<Frame>,
@@ -222,7 +226,8 @@ impl Browsers {
             .map_err(|_| "browser identity unavailable")?
             .clone();
         let mut instance = slot.instance.lock().await;
-        if let Some(instance) = instance.take() {
+        if let Some(mut instance) = instance.take() {
+            drop(instance.debug.take());
             instance.process.close().await?;
         }
         Ok(json!({"ok":true,"effect":"applied","closed":true,"tab_id":id}))
@@ -290,6 +295,72 @@ impl Browsers {
             _ => Err("unknown background browser operation".into()),
         }
     }
+    /// Standalone Host only. Read detaches from the control lock so a bounded
+    /// long-poll cannot stop evaluate/navigation/close from making progress.
+    pub async fn debug(&self, owner: &str, arguments: Value) -> Result<Value, String> {
+        use debug_capture::{Capture, Request};
+        if self.desktop {
+            return Err("browser_debug is available only in a standalone Host".into());
+        }
+        let request: Request =
+            serde_json::from_value(arguments).map_err(|_| "invalid browser_debug arguments")?;
+        let slot = self.slot(owner, false).await?;
+        let mut guard = slot.instance.lock().await;
+        if slot.retired.load(Ordering::SeqCst) {
+            return Err("browser session was closed".into());
+        }
+        let instance = guard.as_mut().ok_or("browser is not ready")?;
+        match request {
+            Request::Start {} => {
+                if instance
+                    .debug
+                    .as_ref()
+                    .is_none_or(|capture| !capture.active())
+                {
+                    let capture = Capture::start(instance.process.page_endpoint()).await?;
+                    if slot.retired.load(Ordering::SeqCst) {
+                        return Err("browser session was closed".into());
+                    }
+                    instance.debug = Some(capture);
+                }
+                let capture = instance
+                    .debug
+                    .as_ref()
+                    .ok_or("browser debug capture unavailable")?;
+                Ok(
+                    json!({"ok":true,"state":"recording","capture_id":capture.id,
+                    "next_cursor":0,"coverage":"page_target","historical_coverage":false}),
+                )
+            }
+            Request::Read {
+                capture_id,
+                after,
+                kind,
+                limit,
+                wait_ms,
+            } => {
+                let reader = instance
+                    .debug
+                    .as_ref()
+                    .ok_or("start a browser debug capture first")?
+                    .reader(&capture_id)?;
+                drop(guard);
+                reader.read(after, kind, limit, wait_ms).await
+            }
+            Request::Stop { capture_id } => {
+                if instance
+                    .debug
+                    .as_ref()
+                    .is_none_or(|capture| capture.id != capture_id)
+                {
+                    return Err("browser debug capture is stale; use the current capture_id".into());
+                }
+                drop(instance.debug.take());
+                Ok(json!({"ok":true,"state":"stopped","capture_id":capture_id}))
+            }
+        }
+    }
+
     /// The desktop wrapper must authenticate the main WebView before calling this.
     pub async fn open_from_shell(&self, owner: &str, url: String) -> Result<Value, String> {
         if !self.desktop {
@@ -330,6 +401,7 @@ impl Browsers {
                 return Err("browser open cancelled by closure".into());
             }
             let instance = Instance {
+                debug: None,
                 process,
                 id: format!("headless:{}", nonce()?),
                 frame: None,

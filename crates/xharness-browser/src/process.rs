@@ -247,6 +247,11 @@ pub struct Process {
     pub preview_cdp: std::sync::Arc<tokio::sync::Mutex<Cdp>>,
 }
 impl Process {
+    /// Produced by owned Chrome/Edge discovery; not accepted from the caller.
+    pub(super) fn page_endpoint(&self) -> &str {
+        &self.cdp.endpoint
+    }
+
     pub async fn launch(binary: &std::path::Path) -> Result<Self, String> {
         let profile = tempfile::Builder::new()
             .prefix("xharness-owned-browser-")
@@ -594,6 +599,7 @@ mod cancellation_tests {
         let slot = browsers.slot("owner", true).await.unwrap();
         *slot.id.lock().unwrap() = Some("fixture".into());
         *slot.instance.lock().await = Some(super::super::Instance {
+            debug: None,
             process,
             id: "fixture".into(),
             release: None,

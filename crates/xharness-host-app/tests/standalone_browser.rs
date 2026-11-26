@@ -107,6 +107,13 @@ mod live {
         const data = await response.json();
         document.querySelector('output').textContent = data.count + args.extra;
         console.info('browser-async-finished', response.status);
+        void fetch('/late?private=debug-query-sentinel', {
+            headers: {"Authorization": "Bearer debug-header-sentinel"},
+        }).then(async result => {
+            await result.text();
+            console.error('browser-late-fixture', result.status);
+            await fetch('/late-logged');
+        });
         return {title: document.title, payload: {total: Number(document.querySelector('output').textContent), items: data.items}};
     "#;
 
@@ -127,21 +134,53 @@ mod live {
         }
     }
 
-    fn response(step: usize, origin: &str) -> String {
+    fn model_receipt(body: &Value, id: &str) -> Value {
+        let message = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool" && m["tool_call_id"] == id)
+            .unwrap();
+        let receipt: Value = serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+        assert!(
+            receipt.get("isError").is_none() && receipt.get("content").is_none(),
+            "{receipt}"
+        );
+        receipt
+    }
+
+    fn response(step: usize, origin: &str, body: &Value) -> String {
+        let debug_id = || model_receipt(body, "call-1")["capture_id"].clone();
         let tool = match step {
             0 => Some((
                 "browser_control",
                 json!({"backend":"browser","action":"open","url":origin}),
             )),
             1 => Some((
-                "browser_evaluate",
-                json!({"backend":"browser","code":SCRIPT,"args":{"extra":5}}),
+                "browser_debug",
+                json!({"backend":"browser","action":"start"}),
             )),
             2 => Some((
                 "browser_evaluate",
+                json!({"backend":"browser","code":SCRIPT,"args":{"extra":5}}),
+            )),
+            3 => Some((
+                "browser_debug",
+                json!({"backend":"browser","action":"read","capture_id":debug_id(),"after":0}),
+            )),
+            4 => Some((
+                "browser_evaluate",
                 json!({"backend":"browser","code":"throw new Error('fixture diagnostic');"}),
             )),
-            3 => None,
+            5 => Some((
+                "browser_debug",
+                json!({"backend":"browser","action":"stop","capture_id":debug_id()}),
+            )),
+            6 => Some((
+                "browser_debug",
+                json!({"backend":"browser","action":"read","capture_id":debug_id()}),
+            )),
+            7 => None,
             _ => panic!("unexpected extra generation call"),
         };
         let (delta, reason) = if let Some((name, arguments)) = tool {
@@ -186,6 +225,10 @@ mod live {
         let fixture = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", fixture.local_addr().unwrap());
         let page = origin.clone();
+        let release_late = Arc::new(tokio::sync::Notify::new());
+        let late_logged = Arc::new(tokio::sync::Notify::new());
+        let late_wait = release_late.clone();
+        let logged = late_logged.clone();
         let routes = Router::new()
             .route(
                 "/",
@@ -196,14 +239,53 @@ mod live {
                 get(|| async { Json(json!({"count":37,"items":["one","two"]})) }),
             )
             .route(
+                "/late",
+                get(move || {
+                    let late_wait = late_wait.clone();
+                    async move {
+                        tokio::time::timeout(Duration::from_secs(25), late_wait.notified())
+                            .await
+                            .expect("provider must receive the evaluate result first");
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "debug-body-sentinel",
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/late-logged",
+                get(move || {
+                    let logged = logged.clone();
+                    async move {
+                        logged.notify_one();
+                        axum::http::StatusCode::NO_CONTENT
+                    }
+                }),
+            )
+            .route(
                 "/v1/chat/completions",
                 post(move |Json(body): Json<Value>| {
                     let requests = requests.clone();
                     let page = page.clone();
+                    let release_late = release_late.clone();
+                    let late_logged = late_logged.clone();
                     async move {
-                        let mut requests = requests.lock().unwrap();
-                        let sse = response(requests.len(), &page);
-                        requests.push(body);
+                        let (step, sse) = {
+                            let mut requests = requests.lock().unwrap();
+                            let step = requests.len();
+                            let sse = response(step, &page, &body);
+                            requests.push(body);
+                            (step, sse)
+                        };
+                        if step == 3 {
+                            // This response cannot happen during browser_evaluate:
+                            // the model endpoint has already received its final receipt.
+                            release_late.notify_one();
+                            tokio::time::timeout(Duration::from_secs(10), late_logged.notified())
+                                .await
+                                .expect("the page must log after the delayed network response");
+                        }
                         ([("content-type", "text/event-stream")], sse)
                     }
                 }),
@@ -324,10 +406,10 @@ mod live {
         .unwrap();
         let requests = captured.lock().unwrap().clone();
         assert_eq!(reason, TurnEndReason::Completed);
-        assert_eq!(requests.len(), 4, "unexpected generation count");
+        assert_eq!(requests.len(), 8, "unexpected generation count");
         // This transcript is from the loopback fixture only. Preserve the exact
         // tool failure on CI instead of reporting just three Error variants.
-        let tool_receipts: Vec<_> = requests[3]["messages"]
+        let tool_receipts: Vec<_> = requests[7]["messages"]
             .as_array()
             .unwrap()
             .iter()
@@ -339,7 +421,11 @@ mod live {
             [
                 ToolOutcome::Success,
                 ToolOutcome::Success,
-                ToolOutcome::Error
+                ToolOutcome::Success,
+                ToolOutcome::Success,
+                ToolOutcome::Error,
+                ToolOutcome::Success,
+                ToolOutcome::Error,
             ],
             "unexpected loopback browser receipts: {tool_receipts:?}"
         );
@@ -357,28 +443,24 @@ mod live {
                 eval["function"]["parameters"]["properties"]["backend"]["enum"],
                 json!(["browser"])
             );
+            let debug = tools
+                .iter()
+                .find(|t| t["function"]["name"] == "browser_debug")
+                .unwrap();
+            assert_eq!(
+                debug["function"]["parameters"]["properties"]["backend"]["enum"],
+                json!(["browser"])
+            );
             assert!(tools.iter().all(|t| !matches!(
                 t["function"]["name"].as_str(),
                 Some("browser_request" | "browser_read_response")
             )));
         }
-        let receipt = |id: &str| {
-            let message = requests[3]["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|m| m["role"] == "tool" && m["tool_call_id"] == id)
-                .unwrap();
-            let receipt: Value =
-                serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
-            assert!(
-                receipt.get("isError").is_none() && receipt.get("content").is_none(),
-                "{receipt}"
-            );
-            receipt
-        };
+        let receipt = |id: &str| model_receipt(&requests[7], id);
         assert_eq!(receipt("call-0")["state"], "ready");
-        let eval = receipt("call-1");
+        let capture = receipt("call-1");
+        assert_eq!(capture["state"], "recording");
+        let eval = receipt("call-2");
         assert_eq!(eval["ok"], true);
         assert_eq!(
             eval["value"],
@@ -388,10 +470,38 @@ mod live {
             .as_str()
             .unwrap()
             .contains("browser-async-finished"));
-        let failure = receipt("call-2");
+        assert!(!eval.to_string().contains("browser-late-fixture"));
+        let debug = receipt("call-3");
+        assert_eq!(debug["capture_id"], capture["capture_id"]);
+        assert_eq!(debug["gap"], false);
+        assert_eq!(debug["untrusted"], true);
+        let events = debug["events"].as_array().unwrap();
+        assert!(
+            events.iter().any(|event| event["kind"] == "console"
+                && event["level"] == "error"
+                && event["text"] == "browser-late-fixture 500"),
+            "{debug}"
+        );
+        assert!(
+            events.iter().any(|event| event["kind"] == "network"
+                && event["phase"] == "finished"
+                && event["status"] == 500
+                && event["url"] == format!("{origin}/late")),
+            "{debug}"
+        );
+        for forbidden in [
+            "debug-query-sentinel",
+            "debug-header-sentinel",
+            "debug-body-sentinel",
+        ] {
+            assert!(!debug.to_string().contains(forbidden), "{debug}");
+        }
+        let failure = receipt("call-4");
         assert_eq!(failure["ok"], false);
         assert_eq!(failure["effect"], "unknown");
         assert_eq!(failure["error"]["message"], "fixture diagnostic");
+        assert_eq!(receipt("call-5")["state"], "stopped");
+        assert_eq!(receipt("call-6")["ok"], false);
 
         let owned_profiles = || {
             std::fs::read_dir(&tmp)
