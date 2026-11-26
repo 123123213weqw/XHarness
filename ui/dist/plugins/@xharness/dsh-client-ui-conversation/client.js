@@ -431,7 +431,7 @@ function apply(ctx) {
             };
         },
     }, ChatView_1.ChatView);
-    // Session stats stick with the composer (composer.dock = stats-line family).
+    // Session stats ride under the composer card on the status slot.
     slots.register({ name: 'conversation.composer.status', id: 'stats', order: 0, locale: locales_1.NS }, StatsLine_1.StatsLine);
     // Class-plugin mount (packages/AGENTS.md service form): the service
     // registers itself as `conversation` and lives on its own child fiber.
@@ -1368,7 +1368,7 @@ exports.billedInputTokens = billedInputTokens;
 exports.contextOccupancy = contextOccupancy;
 const jsx_runtime_1 = require("react/jsx-runtime");
 // Settled-node identity prevents stream-delta updates from rerendering this row.
-// Mounted on 'conversation.composer.dock' so it sticks with the composer in the
+// Mounted on 'conversation.composer.status' so it rides with the composer in the
 // active conversation scrollport (see ConversationRoot data-conversation-scroll).
 const reception_metrics_1 = require("../../shared/reception-metrics");
 const react_1 = require("react");
@@ -1491,28 +1491,25 @@ exports.StatsLine = (0, react_1.memo)(function StatsLine({ useSession, useProjec
     // while no projection value is served.
     const projected = useProjection('sessionStats');
     const stats = (0, react_1.useMemo)(() => projected ?? deriveStats(settledNodes), [projected, settledNodes]);
-    // Groups with no data drop out whole; all reported metrics remain available.
-    const groups = [];
+    // Metrics with no data drop out whole; all reported metrics remain available.
+    // The readout leads with what the user watches while the model streams,
+    // then reports what the session has accumulated.
+    const live = [];
+    const session = [];
     const rateTotals = projected?.activeThroughput ?? stats;
     const rate = (0, reception_metrics_1.throughput)(rateTotals.decodeTokens, rateTotals.decodeMs);
-    const rateLabel = rate === null ? null : t('stats.tokensPerSecond', { throughput: (0, message_chrome_1.formatTokensPerSecond)(rate) });
     if (stats.steps > 0) {
-        groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }));
-        const durations = [];
-        if (stats.llmMs > 0)
-            durations.push(t('stats.llm', { duration: formatDuration(stats.llmMs) }));
-        if (stats.toolMs > 0)
-            durations.push(t('stats.toolCall', { duration: formatDuration(stats.toolMs) }));
-        if (durations.length > 0)
-            groups.push(durations.join(' · '));
-        const speeds = [];
         if (stats.ttftSteps > 0) {
-            speeds.push(t('stats.ttftAverage', { duration: formatDuration(stats.ttftMs / stats.ttftSteps) }));
+            live.push({ key: 'ttft', label: t('stats.ttft'), hint: t('stats.ttftHint'), value: formatDuration(stats.ttftMs / stats.ttftSteps) });
         }
-        if (rateLabel !== null)
-            speeds.push(rateLabel);
-        if (speeds.length > 0)
-            groups.push(speeds.join(' · '));
+        if (rate !== null) {
+            live.push({ key: 'speed', label: t('stats.speed'), hint: t('stats.speedHint'), value: (0, message_chrome_1.formatTokensPerSecond)(rate), unit: t('stats.tokensPerSecond') });
+        }
+        if (stats.llmMs > 0)
+            session.push({ key: 'llm', label: t('stats.llm'), hint: t('stats.llmHint'), value: formatDuration(stats.llmMs) });
+        if (stats.toolMs > 0)
+            session.push({ key: 'tools', label: t('stats.toolCall'), hint: t('stats.toolCallHint'), value: formatDuration(stats.toolMs) });
+        session.push({ key: 'turns', label: t('stats.turns'), hint: t('stats.turnsHint'), value: String(stats.turns) }, { key: 'steps', label: t('stats.steps'), hint: t('stats.stepsHint'), value: String(stats.steps) });
     }
     // Context occupancy deliberately lives on the composer's ContextMeter ring,
     // not here — one home per fact.
@@ -1524,18 +1521,17 @@ exports.StatsLine = (0, react_1.memo)(function StatsLine({ useSession, useProjec
         && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
         const cacheHit = cacheHitPercent(usage);
         if (cacheHit !== null)
-            groups.push(t('stats.cacheHit', { percent: cacheHit }));
-        groups.push(t('stats.tokens', {
-            input: formatTokens(billedInputTokens(usage)),
-            output: formatTokens(usage.outputTokens),
-        }));
+            live.push({ key: 'cache', label: t('stats.cacheHit'), hint: t('stats.cacheHitHint'), value: `${cacheHit}%` });
+        live.push({ key: 'input', label: t('stats.inputTokens'), hint: t('stats.inputTokensHint'), value: formatTokens(billedInputTokens(usage)) }, { key: 'output', label: t('stats.outputTokens'), hint: t('stats.outputTokensHint'), value: formatTokens(usage.outputTokens) });
     }
-    if (groups.length === 0)
+    const rows = [live, session].filter(row => row.length > 0);
+    if (rows.length === 0)
         return null;
-    // Persistent monitoring strip below the composer buttons: these figures
-    // exist to be watched continuously, so they render inline, always on. No
-    // disclosure interaction, no popup geometry.
-    return ((0, jsx_runtime_1.jsx)("div", { className: StatsLine_styles_1.default.root, "data-composer-stats": true, children: (0, jsx_runtime_1.jsx)("div", { id: panelId, className: StatsLine_styles_1.default.strip, role: "status", "aria-label": t('stats.title'), children: groups.map(group => (0, jsx_runtime_1.jsx)("span", { className: StatsLine_styles_1.default.stripItem, children: group }, group)) }) }));
+    // Persistent readout under the composer: a muted label, a brighter value.
+    // These figures exist to be watched continuously, so they render inline,
+    // always on. No disclosure interaction, no popup geometry. Live-region
+    // chatter stays off because the values tick many times a second.
+    return ((0, jsx_runtime_1.jsx)("div", { className: StatsLine_styles_1.default.root, "data-composer-stats": true, children: (0, jsx_runtime_1.jsx)("div", { id: panelId, className: StatsLine_styles_1.default.strip, role: "status", "aria-live": "off", "aria-label": t('stats.title'), children: rows.map((row, index) => ((0, jsx_runtime_1.jsx)("div", { className: StatsLine_styles_1.default.row, children: row.map(metric => ((0, jsx_runtime_1.jsxs)("span", { className: StatsLine_styles_1.default.metric, title: metric.hint, children: [metric.label, (0, jsx_runtime_1.jsx)("span", { className: StatsLine_styles_1.default.value, children: metric.value }), metric.unit] }, metric.key))) }, index))) }) }));
 });
 
 },
@@ -1796,10 +1792,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const StatsLine_css_1 = __importDefault(require("./StatsLine.css"));
 exports.default = {
     "root": "PvwIvW_root",
-    "summary": "PvwIvW_summary",
-    "details": "PvwIvW_details",
     "strip": "PvwIvW_strip",
-    "stripItem": "PvwIvW_stripItem"
+    "row": "PvwIvW_row",
+    "metric": "PvwIvW_metric",
+    "value": "PvwIvW_value"
 };
 const tagId = '@xharness/dsh-client-ui-conversation/StatsLine.module.css';
 if (typeof document !== 'undefined' && document.querySelector('style[data-plugin-css=' + JSON.stringify(tagId) + ']') === null) {
@@ -1815,7 +1811,7 @@ if (typeof document !== 'undefined' && document.querySelector('style[data-plugin
 // source: src/modules/conversation/chat/StatsLine.css
 
 Object.defineProperty(exports, '__esModule', { value: true });
-exports.default = ".PvwIvW_root{position:static;width:100%;min-width:0;box-sizing:border-box;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:20px;font-variant-numeric:tabular-nums}\n.PvwIvW_summary{display:flex;align-items:center;justify-content:center;width:32px;height:32px;cursor:pointer;border:0;background:transparent;color:inherit;padding:0;border-radius:50%}\n.PvwIvW_summary svg{width:18px;height:18px}\n.PvwIvW_summary:hover,.PvwIvW_root[data-expanded]>.PvwIvW_summary{background:var(--dsw-alias-interactive-bg-hover)}\n.PvwIvW_summary:focus-visible{outline:2px solid var(--dsw-alias-border-l3);outline-offset:2px}\n.PvwIvW_details{position:absolute;z-index:100;bottom:calc(100% + 10px);left:0;box-sizing:border-box;width:max-content;min-width:min(220px,100%);max-width:min(340px,100%);max-height:min(300px,60vh);overflow:auto;display:grid;gap:6px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-specific-menu);box-shadow:var(--dsw-shadow-lv3);overflow-wrap:anywhere}.PvwIvW_strip{display:flex;flex-wrap:wrap;column-gap:14px;row-gap:2px;max-height:52px;padding:6px 24px 2px;justify-content:flex-start;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden}.PvwIvW_stripItem{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;max-width:32%}\n";
+exports.default = "/* Labels stay regular: the dark theme's body weight (500) must not flatten the label/value hierarchy. */\n.PvwIvW_root{container-type:inline-size;container-name:xh-composer-stats;align-self:center;width:calc(100% - 2*var(--dsh-composer-side-clearance));max-width:var(--dsh-composer-card-max-width);min-width:0;box-sizing:border-box;padding:0 17px 3px;color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:400;line-height:18px;font-variant-numeric:tabular-nums}\n.PvwIvW_strip{display:flex;flex-direction:column;align-items:flex-start;min-width:0}\n.PvwIvW_row{display:flex;flex:0 0 auto;align-items:baseline;column-gap:12px;white-space:nowrap;min-width:0;max-width:calc(100% + 17px);box-sizing:border-box;padding-right:17px;margin-right:-17px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 17px),#0000);mask-image:linear-gradient(90deg,#000 calc(100% - 17px),#0000)}\n.PvwIvW_row::-webkit-scrollbar{display:none}\n.PvwIvW_metric{display:inline-flex;align-items:baseline;gap:4px;white-space:nowrap}\n.PvwIvW_value{font-size:12px;font-weight:500;color:var(--dsw-alias-label-secondary)}\nbody[data-ds-dark-theme] .PvwIvW_value{color:var(--dsw-alias-label-primary)}\n@container xh-composer-stats (min-width:670px){.PvwIvW_strip{flex-direction:row;flex-wrap:nowrap;align-items:baseline;justify-content:space-between;column-gap:18px}.PvwIvW_row:not(:last-child){flex:none}.PvwIvW_row:last-child{flex:0 1 auto}}\n";
 
 },
 "src/modules/conversation/skeleton/ContextMeter.styles.js": function(module, exports, require) {
@@ -8833,13 +8829,25 @@ exports.en = {
     "context.messages": "Messages", "context.user": "User", "context.assistant": "Assistant", "context.toolResults": "Tool results", "context.mcp": "MCP tools", "context.protocol": "Protocol overhead", "context.distributionEstimate": "Category shares are estimated",
     "context.yourMessages": "Your messages", "context.agentReports": "Agent reports", "context.runtimeContext": "Runtime context", "context.checkpoints": "Checkpoints", "context.unattributed": "Unattributed context", "context.userRoleHistory": "User-role history (source unknown)",
     "stats.title": "Conversation statistics",
-    "stats.counts": "{turns} turns · {steps} steps",
-    "stats.llm": "LLM {duration}",
-    "stats.toolCall": "Tool call {duration}",
-    "stats.ttftAverage": "TTFT avg {duration}",
-    "stats.tokensPerSecond": "{throughput} tok/s",
-    "stats.cacheHit": "Cache hit {percent}%",
-    "stats.tokens": "Input {input} tok · Output {output} tok",
+    "stats.ttft": "TTFT",
+    "stats.ttftHint": "Average time to first token",
+    "stats.speed": "Speed",
+    "stats.speedHint": "Output tokens per second of decode time",
+    "stats.tokensPerSecond": "tok/s",
+    "stats.cacheHit": "Cache",
+    "stats.cacheHitHint": "Share of billed input tokens served from cache",
+    "stats.inputTokens": "In",
+    "stats.inputTokensHint": "Billed input tokens: uncached, cache read and cache write",
+    "stats.outputTokens": "Out",
+    "stats.outputTokensHint": "Output tokens",
+    "stats.llm": "LLM",
+    "stats.llmHint": "Cumulative model request time",
+    "stats.toolCall": "Tools",
+    "stats.toolCallHint": "Cumulative tool run time",
+    "stats.turns": "Turns",
+    "stats.turnsHint": "User turns in this conversation",
+    "stats.steps": "Steps",
+    "stats.stepsHint": "Model steps in this conversation",
     "settings.enter.title": "Enter behavior while busy",
     "settings.enter.description": "Busy only; Cmd/Ctrl+Enter uses the other behavior",
     "settings.enter.queue": "Queue",
@@ -9071,13 +9079,25 @@ exports.zh = {
     "context.messages": "对话消息", "context.user": "用户", "context.assistant": "助手", "context.toolResults": "工具结果", "context.mcp": "MCP 工具", "context.protocol": "协议开销", "context.distributionEstimate": "颜色分布为估算",
     "context.yourMessages": "Your messages", "context.agentReports": "Agent reports", "context.runtimeContext": "Runtime context", "context.checkpoints": "Checkpoints", "context.unattributed": "Unattributed context", "context.userRoleHistory": "User-role history (source unknown)",
     "stats.title": "对话统计",
-    "stats.counts": "{turns} 轮 · {steps} 步",
-    "stats.llm": "LLM {duration}",
-    "stats.toolCall": "工具调用 {duration}",
-    "stats.ttftAverage": "首 token 平均 {duration}",
-    "stats.tokensPerSecond": "{throughput} tok/s",
-    "stats.cacheHit": "缓存命中 {percent}%",
-    "stats.tokens": "输入 {input} tok · 输出 {output} tok",
+    "stats.ttft": "首字",
+    "stats.ttftHint": "平均首 token 延迟",
+    "stats.speed": "速率",
+    "stats.speedHint": "解码阶段每秒输出 token 数",
+    "stats.tokensPerSecond": "tok/s",
+    "stats.cacheHit": "缓存",
+    "stats.cacheHitHint": "计费输入 token 中缓存命中的占比",
+    "stats.inputTokens": "输入",
+    "stats.inputTokensHint": "计费输入 token：未命中缓存 + 缓存读取 + 缓存写入",
+    "stats.outputTokens": "输出",
+    "stats.outputTokensHint": "输出 token",
+    "stats.llm": "LLM",
+    "stats.llmHint": "模型请求累计耗时",
+    "stats.toolCall": "工具",
+    "stats.toolCallHint": "工具运行累计耗时",
+    "stats.turns": "轮次",
+    "stats.turnsHint": "本次对话的用户轮次",
+    "stats.steps": "步数",
+    "stats.stepsHint": "本次对话的模型步数",
     "settings.enter.title": "繁忙时 Enter 键行为",
     "settings.enter.description": "仅在智能体运行时生效；Cmd/Ctrl+Enter 使用另一行为",
     "settings.enter.queue": "排队发送",

@@ -33,6 +33,17 @@ const agentFailureLocales = {
  en: {'chat.agentError':'Background task reported a failure: {message}'},
  zh: {'chat.agentError':'后台任务报告异常：{message}'},
 };
+// The statistics strip became a label/value readout. Every rail string is
+// checked. Keys that left the product dictionary are retired; keys kept only
+// as the name of a rewritten string are rewritten. The frozen reference
+// carries the old sentence under both kinds, so it drops them before parity.
+const statsRailLocales = {
+ en: {'stats.ttft':'TTFT','stats.ttftHint':'Average time to first token','stats.speed':'Speed','stats.speedHint':'Output tokens per second of decode time','stats.tokensPerSecond':'tok/s','stats.cacheHit':'Cache','stats.cacheHitHint':'Share of billed input tokens served from cache','stats.inputTokens':'In','stats.inputTokensHint':'Billed input tokens: uncached, cache read and cache write','stats.outputTokens':'Out','stats.outputTokensHint':'Output tokens','stats.llm':'LLM','stats.llmHint':'Cumulative model request time','stats.toolCall':'Tools','stats.toolCallHint':'Cumulative tool run time','stats.turns':'Turns','stats.turnsHint':'User turns in this conversation','stats.steps':'Steps','stats.stepsHint':'Model steps in this conversation'},
+ zh: {'stats.ttft':'首字','stats.ttftHint':'平均首 token 延迟','stats.speed':'速率','stats.speedHint':'解码阶段每秒输出 token 数','stats.tokensPerSecond':'tok/s','stats.cacheHit':'缓存','stats.cacheHitHint':'计费输入 token 中缓存命中的占比','stats.inputTokens':'输入','stats.inputTokensHint':'计费输入 token：未命中缓存 + 缓存读取 + 缓存写入','stats.outputTokens':'输出','stats.outputTokensHint':'输出 token','stats.llm':'LLM','stats.llmHint':'模型请求累计耗时','stats.toolCall':'工具','stats.toolCallHint':'工具运行累计耗时','stats.turns':'轮次','stats.turnsHint':'本次对话的用户轮次','stats.steps':'步数','stats.stepsHint':'本次对话的模型步数'},
+};
+const retiredStatsKeys = ['stats.counts','stats.ttftAverage','stats.tokens'];
+const frozenStatsKeys = [...retiredStatsKeys, ...Object.keys(statsRailLocales.en)];
+const withoutRetiredStats = locale => Object.fromEntries(Object.entries(json(locale)).filter(([key]) => !frozenStatsKeys.includes(key)));
 const agentFailureStyle = '\n.IxU-fW_openError[data-agent-error]{position:sticky;top:0;z-index:9;flex:none;padding:8px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-interactive-bg-hover-solid)}\n';
 function baselineAgentFailureStyle(source) {
  source=stripTurnStyle(source,'chat',false);
@@ -93,6 +104,12 @@ function baselineProductCopy(language, locale) {
   delete normalized[key];
  }
  delete normalized['stats.title'];
+ for(const [key,expected] of Object.entries(statsRailLocales[language])) {
+  if(!frozenStatsKeys.includes(key)) assert.equal(Object.hasOwn(apis[0].plugin[language],key),false,'statistics rail string is additive; keep the frozen baseline unchanged');
+  assert.equal(locale[key],expected,`${language} statistics rail string ${key}`);
+  delete normalized[key];
+ }
+ for(const key of retiredStatsKeys) assert.equal(Object.hasOwn(locale,key),false,'retired statistics sentence must not return: '+key);
  return normalized;
 }
 function stateContext(def,state,matches){return{key:def.kind+':c',id:'c',state,matches,start:matches.find(m=>m.role==='start'),locations:[],target:'chat'}}
@@ -167,6 +184,23 @@ test('reviewed agent failure copy and sticky notice reject missing, changed and 
  assert.throws(()=>baselineAgentFailureStyle('.unreviewed{color:red}'+source),/unrelated ChatView styles/);
 });
 
+test('reviewed statistics readout rejects missing, changed and retired copy without hiding unrelated deltas',()=>{
+ for(const language of ['en','zh']) {
+  const current=json(apis[1].plugin[language]),normalized=baselineProductCopy(language,current);
+  for(const key of Object.keys(statsRailLocales[language])) {
+   const missing={...current};delete missing[key];
+   assert.throws(()=>baselineProductCopy(language,missing),/statistics rail string/);
+   assert.throws(()=>baselineProductCopy(language,{...current,[key]:'incorrect readout'}),/statistics rail string/);
+  }
+  for(const key of retiredStatsKeys) {
+   assert.throws(()=>baselineProductCopy(language,{...current,[key]:'returned'}),/retired statistics sentence/);
+   assert.equal(Object.hasOwn(current,key),false,'retired sentence key stays out of the product dictionary');
+  }
+  const unrelated=baselineProductCopy(language,{...current,'stats.unreviewed':'unexpected'});
+  assert.equal(unrelated['stats.unreviewed'],'unexpected');
+  assert.notDeepEqual(unrelated,normalized,'unrelated dictionary changes must still fail strict parity');
+ }
+});
 test('fork/subagent breadcrumbs preserve source ancestry, missing parents and cycle guards',()=>{
  const list={byId:{parent:{id:'parent',displayTitle:'Parent',origin:'user'},fork:{id:'fork',displayTitle:'Fork',origin:'fork',parentId:'parent'},agent:{id:'agent',displayTitle:'Agent',origin:'subagent',parentId:'fork'}}};
  const readers=[legacySource,compiled.entry].map(source=>harness(exposeConversation(source,['deriveAncestry'])).plugin.deriveAncestry);
@@ -223,7 +257,7 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
  // rather than weakening frozen-style parity for unrelated components.
  const reviewedStyles = {
   'skeleton/InputBar': '69ab58356bf9c4f406b0e36c96b7fe2b6239d92da102990f6245bf9e86008653',
-  'chat/StatsLine': '7180947c7471c272cda25e84b99a8c607f5fb74d5d6bb24b48175a04661e5958',
+  'chat/StatsLine': 'ba35718bf3223a6dffe674f366dec0b73b2bd5cc6e0315ac734a414c9a1671d4',
   'skeleton/ContextMeter': '7a712d895a114ee0a5cddc1cdbc55692e6d6b52289ef4409e927809bbc694ff2',
   'skeleton/PermissionSelect': 'e91048346a2948571cfa55321fd43f8a22cf96c0b0b89b4bd4882736a29eda74',
   'skeleton/TodoPanel': 'aaf719207bee33d33551031960513e1d0c8b7b01bb35a807a362f7b75e849fdc',
@@ -263,7 +297,7 @@ test('real source entry preserves published ABI, injection, exact stylesheet tag
  const argumentLocales={"en": {"tool.arguments.generating": "Generating tool input", "tool.arguments.received": "{size} received", "tool.arguments.elapsed": "{seconds}s", "tool.arguments.notExecuted": "The model is still generating input. The tool has not executed yet.", "tool.arguments.preview": "Input preview", "tool.arguments.raw": "Raw JSON", "tool.arguments.showPreview": "Show preview", "tool.arguments.showRaw": "Show raw JSON", "tool.arguments.waiting": "Waiting for input…", "tool.arguments.truncated": "Preview limited to {count} characters. The actual tool input is not truncated."}, "zh": {"tool.arguments.generating": "正在生成工具参数", "tool.arguments.received": "已接收 {size}", "tool.arguments.elapsed": "{seconds} 秒", "tool.arguments.notExecuted": "模型仍在生成参数，工具尚未执行。", "tool.arguments.preview": "内容预览", "tool.arguments.raw": "原始 JSON", "tool.arguments.showPreview": "查看内容预览", "tool.arguments.showRaw": "查看原始 JSON", "tool.arguments.waiting": "等待参数内容…", "tool.arguments.truncated": "仅预览前 {count} 个字符，实际工具参数未被截断。"}};
  const newKeys=[...Object.keys(argumentLocales.en),'approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'];
  const withoutNew=locale=>Object.fromEntries(Object.entries(json(locale)).filter(([key])=>!newKeys.includes(key)));
- for(const language of ['en','zh']){assert.deepEqual(Object.fromEntries(Object.keys(argumentLocales[language]).map(key=>[key,apis[1].plugin[language][key]])),argumentLocales[language]);assert.deepEqual(withoutNew(baselineProductCopy(language, apis[1].plugin[language])),json(apis[0].plugin[language]));for(const key of newKeys)assert.equal(typeof apis[1].plugin[language][key],'string')}
+ for(const language of ['en','zh']){assert.deepEqual(Object.fromEntries(Object.keys(argumentLocales[language]).map(key=>[key,apis[1].plugin[language][key]])),argumentLocales[language]);assert.deepEqual(withoutNew(baselineProductCopy(language, apis[1].plugin[language])),withoutRetiredStats(apis[0].plugin[language]));for(const key of newKeys)assert.equal(typeof apis[1].plugin[language][key],'string')}
  for(const [language,expected] of [['en','Reviewing on your behalf…'],['zh','正在代你审核…']])assert.equal(apis[1].plugin[language]['approval.reviewing'],expected);
  assert.deepEqual(Object.fromEntries(['message.foldedTools','message.expandedTools'].map(key=>[key,apis[1].plugin.en[key]])),{'message.foldedTools':'{count} completed operations','message.expandedTools':'Earlier completed operations · {count}'})
  assert.deepEqual(Object.fromEntries(['message.foldedTools','message.expandedTools'].map(key=>[key,apis[1].plugin.zh[key]])),{'message.foldedTools':'已收起 {count} 个完成的操作','message.expandedTools':'较早的已完成操作 · {count}'})
@@ -287,7 +321,7 @@ test('complete apply registration: keyed nodes, resident shell, overlays, docks,
  }
  // Explicit additive environment slot, while old registrations remain unchanged.
  if(api===apis[1].plugin){const root=normalize.find(spec=>spec.name==='conversation');assert.deepEqual(root.children['conversation.hero.runtimeEnvironment'],{kind:'single',scope:'root'});delete root.children['conversation.hero.runtimeEnvironment'];delete root.children['conversation.composer.status'];}
- const baselineDicts=json(dicts).map(([ns,languages])=>[ns,Object.fromEntries(Object.entries(languages).map(([language,values])=>[language,Object.fromEntries(Object.entries(api === apis[1].plugin ? baselineProductCopy(language, values) : values).filter(([key])=>!key.startsWith('tool.arguments.')&&!['approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'].includes(key)))]))]);
+ const baselineDicts=json(dicts).map(([ns,languages])=>[ns,Object.fromEntries(Object.entries(languages).map(([language,values])=>[language,Object.fromEntries(Object.entries(api === apis[1].plugin ? baselineProductCopy(language, values) : withoutRetiredStats(values)).filter(([key])=>!key.startsWith('tool.arguments.')&&!['approval.reviewing','message.turnFinished','message.expandProcess','message.collapseProcess','message.foldedTools','message.expandedTools','chat.messageRail','chat.messageRail.message'].includes(key)))]))]);
  receipts.push({slots:normalize,defs,views,dicts:baselineDicts,events});}
  assert.deepEqual(json(receipts[1]),json(receipts[0]));assert.equal(receipts[1].defs.length,13);
 });

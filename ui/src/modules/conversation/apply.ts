@@ -441,7 +441,7 @@ export function apply(ctx: Context): void {
     },
   }, ChatView)
 
-  // Session stats stick with the composer (composer.dock = stats-line family).
+  // Session stats ride under the composer card on the status slot.
   slots.register({ name: 'conversation.composer.status', id: 'stats', order: 0, locale: NS }, StatsLine)
 
   // Class-plugin mount (packages/AGENTS.md service form): the service

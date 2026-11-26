@@ -34,8 +34,18 @@ for n in range(6):
     if selected and selected['name'].endswith('-000002'): break
     if n == 5: raise ValueError('Checkpoint artifact did not become readable within the bounded deadline')
     time.sleep(5)
-restored = service.restore(client, root, '0.0.0', e['GITHUB_RUN_ID'], source)
-assert restored == last
+# restore() reads the artifact listing afresh, and one read can trail an earlier
+# one: a just-listed revision is missing, so an older one counts as the latest.
+# Wait for the revision known to be newest. Each retry only repeats reads.
+restored = None
+for n in range(6):
+    restored = service.restore(client, root, '0.0.0', e['GITHUB_RUN_ID'], source)
+    if restored == last: break
+    if n == 5:
+        listed = sorted(row['name'] for row in client.pages(f"actions/runs/{e['GITHUB_RUN_ID']}/artifacts?per_page=100", 'artifacts')
+                        if str(row.get('name', '')).startswith('release-task-'))
+        raise AssertionError(f'Restored checkpoint {restored!r} differs from the uploaded {last!r}; artifacts listed: {listed}')
+    time.sleep(5)
 with open(e['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
     stream.write('## Release checkpoint rehearsal\nTwo immutable revisions uploaded; the highest revision was downloaded and compared byte-for-byte. No release dispatch, signing key or native installation was used.\n')
 print('Hosted checkpoint upload/latest-revision/restore round-trip passed.')
